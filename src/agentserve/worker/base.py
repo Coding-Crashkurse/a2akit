@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import base64
-import json
 import logging
 import uuid
 from abc import ABC, abstractmethod
@@ -29,6 +28,7 @@ from a2a.types import (
 
 from agentserve.broker.base import CancelScope
 from agentserve.event_emitter import EventEmitter
+from agentserve.storage.base import Storage
 
 logger = logging.getLogger(__name__)
 
@@ -282,9 +282,21 @@ class TaskContext(ABC):
     ) -> None:
         """Emit a structured data artifact chunk."""
 
+    @abstractmethod
+    async def load_context(self) -> Any:
+        """Load stored context for this task's context_id."""
+
+    @abstractmethod
+    async def update_context(self, context: Any) -> None:
+        """Store context for this task's context_id."""
+
 
 class TaskContextImpl(TaskContext):
-    """Concrete implementation backed by an EventEmitter."""
+    """Concrete implementation backed by an EventEmitter and Storage.
+
+    Uses EventEmitter for task state changes and event broadcasting.
+    Uses Storage directly for context load/update operations.
+    """
 
     def __init__(
         self,
@@ -297,9 +309,17 @@ class TaskContextImpl(TaskContext):
         metadata: dict | None = None,
         emitter: EventEmitter,
         cancel_event: CancelScope,
+        storage: Storage,
         history: list[HistoryMessage] | None = None,
         previous_artifacts: list[PreviousArtifact] | None = None,
     ) -> None:
+        """Initialize the task context.
+
+        Args:
+            emitter: EventEmitter for state changes and event broadcasting.
+            cancel_event: Scope for cooperative cancellation checks.
+            storage: Storage for context load/update operations.
+        """
         self.task_id = task_id
         self.context_id = context_id
         self.message_id = message_id
@@ -308,6 +328,7 @@ class TaskContextImpl(TaskContext):
         self.metadata = metadata if metadata is not None else {}
         self._emitter = emitter
         self._cancel_event = cancel_event
+        self._storage = storage
         self._history = history if history is not None else []
         self._previous_artifacts = (
             previous_artifacts if previous_artifacts is not None else []
@@ -348,25 +369,15 @@ class TaskContextImpl(TaskContext):
     async def complete(self, text: str | None = None) -> None:
         """Mark the task as completed, optionally with a final text artifact."""
         artifacts = None
-        messages = None
 
         if text:
             final_parts = [Part(TextPart(text=text))]
             artifacts = [Artifact(artifact_id="final-answer", parts=final_parts)]
-            messages = [
-                Message(
-                    role=Role.agent,
-                    parts=final_parts,
-                    message_id=str(uuid.uuid4()),
-                    metadata=self.metadata,
-                )
-            ]
 
         await self._emitter.update_task(
             self.task_id,
             state=TaskState.completed,
             artifacts=artifacts,
-            messages=messages,
         )
 
         if artifacts:
@@ -387,25 +398,17 @@ class TaskContextImpl(TaskContext):
 
     async def complete_json(self, data: dict | list) -> None:
         """Complete task with a JSON data artifact."""
-        json_text = json.dumps(data, ensure_ascii=False)
         data_parts = [Part(DataPart(data=data))]
         artifact = Artifact(
             artifact_id="final-answer",
             parts=data_parts,
             metadata={"media_type": "application/json"},
         )
-        agent_message = Message(
-            role=Role.agent,
-            parts=[Part(TextPart(text=json_text))],
-            message_id=str(uuid.uuid4()),
-            metadata=self.metadata,
-        )
 
         await self._emitter.update_task(
             self.task_id,
             state=TaskState.completed,
             artifacts=[artifact],
-            messages=[agent_message],
         )
 
         await self._emitter.send_event(
@@ -501,13 +504,12 @@ class TaskContextImpl(TaskContext):
             parts=parts,
             metadata=metadata or {},
         )
-        if not append or last_chunk:
-            await self._emitter.update_task(
-                self.task_id,
-                state=TaskState.working,
-                artifacts=[artifact],
-                append_artifact=append,
-            )
+        await self._emitter.update_task(
+            self.task_id,
+            state=TaskState.working,
+            artifacts=[artifact],
+            append_artifact=append,
+        )
         await self._emitter.send_event(
             self.task_id,
             TaskArtifactUpdateEvent(
@@ -595,6 +597,18 @@ class TaskContextImpl(TaskContext):
                 final=final,
             ),
         )
+
+    async def load_context(self) -> Any:
+        """Load stored context for this task's context_id."""
+        if not self.context_id:
+            return None
+        return await self._storage.load_context(self.context_id)
+
+    async def update_context(self, context: Any) -> None:
+        """Store context for this task's context_id."""
+        if not self.context_id:
+            return
+        await self._storage.update_context(self.context_id, context)
 
 
 class Worker(ABC):

@@ -1,4 +1,4 @@
-"""In-memory broker backend for single-process deployments."""
+"""In-memory broker and cancel registry for single-process deployments."""
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStre
 
 from agentserve.broker.base import (
     Broker,
+    CancelRegistry,
     CancelScope,
     OperationHandle,
     TaskOperation,
@@ -32,6 +33,31 @@ class AnyioCancelScope(CancelScope):
     def is_set(self) -> bool:
         """Check if cancellation was requested without blocking."""
         return self._event.is_set()
+
+
+class InMemoryCancelRegistry(CancelRegistry):
+    """In-memory cancel registry backed by anyio events."""
+
+    def __init__(self) -> None:
+        """Initialize empty cancel event store."""
+        self._cancel_events: dict[str, anyio.Event] = {}
+
+    async def request_cancel(self, task_id: str) -> None:
+        """Signal cancellation for a task."""
+        self._cancel_events.setdefault(task_id, anyio.Event()).set()
+
+    async def is_cancelled(self, task_id: str) -> bool:
+        """Check if cancellation was requested for a task."""
+        ev = self._cancel_events.get(task_id)
+        return ev is not None and ev.is_set()
+
+    def on_cancel(self, task_id: str) -> CancelScope:
+        """Return a scope that signals when cancellation is requested."""
+        return AnyioCancelScope(self._cancel_events.setdefault(task_id, anyio.Event()))
+
+    async def cleanup(self, task_id: str) -> None:
+        """Release resources for a completed task."""
+        self._cancel_events.pop(task_id, None)
 
 
 class InMemoryOperationHandle(OperationHandle):
@@ -67,7 +93,6 @@ class InMemoryBroker(Broker):
         self._aexit_stack: AsyncExitStack | None = None
         self._ops_write: MemoryObjectSendStream[TaskOperation] | None = None
         self._ops_read: MemoryObjectReceiveStream[TaskOperation] | None = None
-        self._cancel_events: dict[str, anyio.Event] = {}
 
     async def __aenter__(self) -> Self:
         """Create memory streams."""
@@ -93,25 +118,8 @@ class InMemoryBroker(Broker):
             _RunTask(operation="run", params=params, is_new_task=is_new_task)
         )
 
-    async def request_cancel(self, task_id: str) -> None:
-        """Signal cancellation for a task."""
-        self._cancel_events.setdefault(task_id, anyio.Event()).set()
-
-    async def is_cancelled(self, task_id: str) -> bool:
-        """Check if cancellation was requested for a task."""
-        ev = self._cancel_events.get(task_id)
-        return ev is not None and ev.is_set()
-
-    def on_cancel(self, task_id: str) -> CancelScope:
-        """Return a scope that signals when cancellation is requested."""
-        return AnyioCancelScope(self._cancel_events.setdefault(task_id, anyio.Event()))
-
-    async def cleanup_task(self, task_id: str) -> None:
-        """Release resources associated with a completed task."""
-        self._cancel_events.pop(task_id, None)
-
-    def receive_task_operations(self) -> AsyncIterator[OperationHandle]:
-        """Return an async iterator of operation handles."""
+    async def receive_task_operations(self) -> AsyncIterator[OperationHandle]:
+        """Receive task operations from the internal queue."""
         return self._receive_ops()
 
     async def _requeue(self, op: TaskOperation) -> None:

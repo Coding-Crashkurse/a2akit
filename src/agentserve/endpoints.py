@@ -120,6 +120,27 @@ def build_a2a_router() -> APIRouter:
             )
         return t
 
+    @router.post("/v1/tasks/{task_id}:subscribe")
+    async def tasks_subscribe(
+        request: Request, task_id: str = Path()
+    ) -> EventSourceResponse:
+        """Subscribe to updates for an existing task via SSE."""
+        tm = _get_tm(request)
+        agen = tm.subscribe_task(task_id)
+        first_event = await anext(agen)
+
+        async def sse_gen() -> AsyncIterator[str]:
+            """Yield JSON-serialized events for the SSE response."""
+            try:
+                yield first_event.model_dump_json(by_alias=True, exclude_none=True)
+                async for ev in agen:
+                    yield ev.model_dump_json(by_alias=True, exclude_none=True)
+            except Exception:
+                logger.exception("SSE subscribe stream aborted")
+                return
+
+        return EventSourceResponse(sse_gen())
+
     @router.get("/v1/health")
     async def health_check():
         """Return a simple health status."""

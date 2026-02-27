@@ -17,8 +17,8 @@ class EventBus(ABC):
         """Publish a stream event to all subscribers of a task."""
 
     @abstractmethod
-    def subscribe(self, task_id: str) -> AsyncIterator[StreamEvent]:
-        """Return an async iterator of stream events for a task."""
+    async def subscribe(self, task_id: str) -> AsyncIterator[StreamEvent]:
+        """Subscribe to stream events for a task. Setup may be async."""
 
     async def cleanup(self, task_id: str) -> None:
         """Release subscriber resources for a completed task.

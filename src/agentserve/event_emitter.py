@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import logging
 from abc import ABC, abstractmethod
 
-from a2a.types import Artifact, Message, TaskState
+from a2a.types import Artifact, Message, Task, TaskState
 
 from agentserve.event_bus.base import EventBus
 from agentserve.schema import StreamEvent
 from agentserve.storage.base import Storage
+
+logger = logging.getLogger(__name__)
 
 
 class EventEmitter(ABC):
@@ -26,7 +29,7 @@ class EventEmitter(ABC):
         artifacts: list[Artifact] | None = None,
         messages: list[Message] | None = None,
         append_artifact: bool = False,
-    ) -> None:
+    ) -> Task:
         """Persist a task state change (and optional artifacts/messages)."""
 
     @abstractmethod
@@ -35,7 +38,11 @@ class EventEmitter(ABC):
 
 
 class DefaultEventEmitter(EventEmitter):
-    """Default implementation that delegates to an EventBus and Storage pair."""
+    """Default implementation that delegates to an EventBus and Storage pair.
+
+    Storage write is authoritative. EventBus failure is logged but not raised,
+    providing at-least-once delivery semantics for Storage and best-effort for EventBus.
+    """
 
     def __init__(self, event_bus: EventBus, storage: Storage) -> None:
         self._event_bus = event_bus
@@ -49,9 +56,9 @@ class DefaultEventEmitter(EventEmitter):
         artifacts: list[Artifact] | None = None,
         messages: list[Message] | None = None,
         append_artifact: bool = False,
-    ) -> None:
+    ) -> Task:
         """Persist a task state change via storage."""
-        await self._storage.update_task(
+        return await self._storage.update_task(
             task_id,
             state=state,
             artifacts=artifacts,
@@ -60,5 +67,8 @@ class DefaultEventEmitter(EventEmitter):
         )
 
     async def send_event(self, task_id: str, event: StreamEvent) -> None:
-        """Broadcast a stream event via event bus."""
-        await self._event_bus.publish(task_id, event)
+        """Broadcast a stream event via event bus (best-effort)."""
+        try:
+            await self._event_bus.publish(task_id, event)
+        except Exception:
+            logger.exception("Failed to publish event for task %s", task_id)

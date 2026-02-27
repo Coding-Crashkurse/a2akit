@@ -1,4 +1,4 @@
-"""Broker ABC and operation types for task scheduling."""
+"""Broker ABC, CancelRegistry, and operation types for task scheduling."""
 
 from __future__ import annotations
 
@@ -62,8 +62,27 @@ class CancelScope(ABC):
         """Check if cancellation was requested without blocking."""
 
 
+class CancelRegistry(ABC):
+    """Registry for task cancellation signals."""
+
+    @abstractmethod
+    async def request_cancel(self, task_id: str) -> None:
+        """Signal cancellation for a task."""
+
+    @abstractmethod
+    async def is_cancelled(self, task_id: str) -> bool:
+        """Check if cancellation was requested."""
+
+    @abstractmethod
+    def on_cancel(self, task_id: str) -> CancelScope:
+        """Return a scope that signals when cancellation is requested."""
+
+    async def cleanup(self, task_id: str) -> None:
+        """Release resources for a completed task."""
+
+
 class Broker(ABC):
-    """Abstract broker for task scheduling and cancellation."""
+    """Abstract broker for task scheduling."""
 
     @abstractmethod
     async def run_task(
@@ -82,22 +101,5 @@ class Broker(ABC):
     ) -> None: ...
 
     @abstractmethod
-    def receive_task_operations(self) -> AsyncIterator[OperationHandle]: ...
-
-    @abstractmethod
-    async def request_cancel(self, task_id: str) -> None:
-        """Signal cancellation for a task through the broker."""
-
-    @abstractmethod
-    async def is_cancelled(self, task_id: str) -> bool:
-        """Check if cancellation was requested for a task."""
-
-    @abstractmethod
-    def on_cancel(self, task_id: str) -> CancelScope:
-        """Return a scope that signals when cancellation is requested."""
-
-    async def cleanup_task(self, _task_id: str) -> None:
-        """Release resources associated with a completed task.
-
-        Default no-op; override as needed.
-        """
+    async def receive_task_operations(self) -> AsyncIterator[OperationHandle]:
+        """Receive task operations. Connection setup may be async."""

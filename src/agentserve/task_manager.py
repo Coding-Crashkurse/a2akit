@@ -11,11 +11,11 @@ from typing import Any
 
 from a2a.types import MessageSendParams, Task, TaskStatusUpdateEvent
 
-from agentserve.broker import Broker
+from agentserve.broker import Broker, CancelRegistry
 from agentserve.event_bus.base import EventBus
 from agentserve.schema import StreamEvent
 from agentserve.storage import Storage
-from agentserve.storage.base import ListTasksQuery, ListTasksResult
+from agentserve.storage.base import TERMINAL_STATES, ListTasksQuery, ListTasksResult
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +27,7 @@ class TaskManager:
     broker: Broker
     storage: Storage
     event_bus: EventBus
+    cancel_registry: CancelRegistry
     default_blocking_timeout_s: float = 30.0
     _background_tasks: set[asyncio.Task[Any]] = field(
         default_factory=set, init=False, repr=False
@@ -49,7 +50,7 @@ class TaskManager:
         if params.configuration and params.configuration.blocking:
             try:
                 async with asyncio.timeout(self.default_blocking_timeout_s):
-                    async for ev in self.event_bus.subscribe(task.id):
+                    async for ev in await self.event_bus.subscribe(task.id):
                         if isinstance(ev, TaskStatusUpdateEvent) and ev.final:
                             break
             except TimeoutError:
@@ -78,7 +79,24 @@ class TaskManager:
         self._background_tasks.add(fut)
         fut.add_done_callback(self._background_tasks.discard)
 
-        async for ev in self.event_bus.subscribe(task.id):
+        async for ev in await self.event_bus.subscribe(task.id):
+            yield ev
+
+    async def subscribe_task(self, task_id: str) -> AsyncGenerator[StreamEvent, None]:
+        """Subscribe to updates for an existing task.
+
+        Yields the current task state first, then streams live events.
+        """
+        task = await self.storage.load_task(task_id)
+        if task is None:
+            from agentserve.storage.base import TaskNotFoundError
+
+            raise TaskNotFoundError(f"Task {task_id} not found")
+        if task.status.state in TERMINAL_STATES:
+            yield task
+            return
+        yield task
+        async for ev in await self.event_bus.subscribe(task_id):
             yield ev
 
     async def get_task(
@@ -94,9 +112,9 @@ class TaskManager:
     async def cancel_task(self, task_id: str) -> Task | None:
         """Request cancellation of a task and return its current state.
 
-        Signals the broker to cancel the task. The worker is responsible
+        Signals the cancel registry. The worker is responsible
         for the actual state transition to avoid races with concurrent
         complete/fail calls.
         """
-        await self.broker.request_cancel(task_id)
+        await self.cancel_registry.request_cancel(task_id)
         return await self.storage.load_task(task_id)

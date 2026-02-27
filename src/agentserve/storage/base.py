@@ -5,7 +5,9 @@ from __future__ import annotations
 import logging
 import types
 from abc import ABC, abstractmethod
-from typing import Self
+from typing import Any, Generic, Self
+
+from typing_extensions import TypeVar
 
 from a2a.types import Artifact, Message, Role, Task, TaskState
 from pydantic import BaseModel, Field
@@ -61,6 +63,9 @@ class ListTasksResult(BaseModel):
     total_size: int = 0
 
 
+ContextT = TypeVar("ContextT", default=Any)
+
+
 def _is_agent_role(role: str | Role | None) -> bool:
     """Check whether a role value represents the agent role."""
     if role is None:
@@ -68,7 +73,7 @@ def _is_agent_role(role: str | Role | None) -> bool:
     return role == "agent" or getattr(role, "value", None) == "agent"
 
 
-class Storage(ABC):
+class Storage(ABC, Generic[ContextT]):
     """Abstract storage interface for A2A tasks."""
 
     async def __aenter__(self) -> Self:
@@ -141,6 +146,23 @@ class Storage(ABC):
         return await self.create_task(context_id, message)
 
     @abstractmethod
+    async def transition_state(self, task_id: str, state: TaskState) -> Task:
+        """Transition a task to a new state."""
+
+    @abstractmethod
+    async def append_messages(self, task_id: str, messages: list[Message]) -> Task:
+        """Append messages to a task's history."""
+
+    @abstractmethod
+    async def upsert_artifact(
+        self, task_id: str, artifact: Artifact, *, append: bool = False
+    ) -> Task:
+        """Insert or update an artifact on a task.
+
+        If append=True and an artifact with the same artifact_id exists,
+        extend its parts. Otherwise replace or insert.
+        """
+
     async def update_task(
         self,
         task_id: str,
@@ -149,4 +171,44 @@ class Storage(ABC):
         artifacts: list[Artifact] | None = None,
         messages: list[Message] | None = None,
         append_artifact: bool = False,
-    ) -> None: ...
+    ) -> Task:
+        """Convenience method that calls append_messages, upsert_artifact, then transition_state.
+
+        Messages and artifacts are persisted before transitioning state so that
+        a terminal state transition does not block their insertion.
+
+        Important: append_messages and upsert_artifact will raise TaskTerminalStateError
+        if the task is already in a terminal state. Only call this method on tasks that
+        are in a non-terminal state, or without messages/artifacts if the task may be terminal.
+        """
+        task: Task | None = None
+        if messages:
+            task = await self.append_messages(task_id, messages)
+        if artifacts:
+            for artifact in artifacts:
+                task = await self.upsert_artifact(
+                    task_id, artifact, append=append_artifact
+                )
+        task = await self.transition_state(task_id, state)
+        return task
+
+    async def delete_task(self, task_id: str) -> bool:
+        """Delete a task by ID. Returns True if the task existed."""
+        raise NotImplementedError
+
+    async def delete_context(self, context_id: str) -> int:
+        """Delete all tasks in a context. Returns the number of deleted tasks."""
+        raise NotImplementedError
+
+    async def load_context(self, context_id: str) -> ContextT | None:
+        """Load stored context for a context_id. Returns None if not found.
+
+        Default implementation returns None (no context storage).
+        """
+        return None
+
+    async def update_context(self, context_id: str, context: ContextT) -> None:
+        """Store context for a context_id.
+
+        Default implementation is a no-op.
+        """

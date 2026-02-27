@@ -10,7 +10,12 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from agentserve.agent_card import AgentCardConfig
-from agentserve.broker import Broker, InMemoryBroker
+from agentserve.broker import (
+    Broker,
+    CancelRegistry,
+    InMemoryBroker,
+    InMemoryCancelRegistry,
+)
 from agentserve.endpoints import build_a2a_router, build_discovery_router
 from agentserve.event_bus import EventBus, InMemoryEventBus
 from agentserve.storage import (
@@ -38,6 +43,7 @@ class A2AServer:
         storage: str | Storage = "memory",
         broker: str | Broker = "memory",
         event_bus: str | EventBus = "memory",
+        cancel_registry: CancelRegistry | None = None,
         blocking_timeout_s: float = 30.0,
         max_concurrent_tasks: int | None = None,
     ) -> None:
@@ -47,6 +53,7 @@ class A2AServer:
         self._storage_spec = storage
         self._broker_spec = broker
         self._event_bus_spec = event_bus
+        self._cancel_registry = cancel_registry
         self._blocking_timeout_s = blocking_timeout_s
         self._max_concurrent_tasks = max_concurrent_tasks
 
@@ -87,17 +94,20 @@ class A2AServer:
             storage = server._build_storage()
             broker = server._build_broker()
             event_bus = server._build_event_bus()
+            cancel_registry = server._cancel_registry or InMemoryCancelRegistry()
             adapter = WorkerAdapter(
                 server._worker,
                 broker,
                 storage,
                 event_bus,
+                cancel_registry,
                 max_concurrent_tasks=server._max_concurrent_tasks,
             )
             tm = TaskManager(
                 broker=broker,
                 storage=storage,
                 event_bus=event_bus,
+                cancel_registry=cancel_registry,
                 default_blocking_timeout_s=server._blocking_timeout_s,
             )
 

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from a2a.types import (
     AgentCapabilities,
     AgentCard,
@@ -23,6 +25,14 @@ class SkillConfig(BaseModel):
     examples: list[str] = Field(default_factory=list)
 
 
+class ExtensionConfig(BaseModel):
+    """User-friendly extension definition without A2A protocol imports."""
+
+    uri: str
+    description: str | None = None
+    params: dict[str, Any] = Field(default_factory=dict)
+
+
 class AgentCardConfig(BaseModel):
     """User-friendly configuration for building an AgentCard."""
 
@@ -31,7 +41,7 @@ class AgentCardConfig(BaseModel):
     version: str = "1.0.0"
     protocol_version: str = "0.3.0"
     skills: list[SkillConfig] = Field(default_factory=list)
-    extensions: list[AgentExtension] = Field(default_factory=list)
+    extensions: list[ExtensionConfig] = Field(default_factory=list)
 
     streaming: bool = True
     push_notifications: bool = False
@@ -56,6 +66,15 @@ def _to_agent_skill(skill: SkillConfig) -> AgentSkill:
     )
 
 
+def _to_agent_extension(ext: ExtensionConfig) -> AgentExtension:
+    """Convert an ExtensionConfig to the A2A AgentExtension type."""
+    return AgentExtension(
+        uri=ext.uri,
+        description=ext.description,
+        params=ext.params or None,
+    )
+
+
 def build_agent_card(config: AgentCardConfig, base_url: str) -> AgentCard:
     """Build a full AgentCard from user config and the runtime base URL."""
     return AgentCard(
@@ -69,7 +88,7 @@ def build_agent_card(config: AgentCardConfig, base_url: str) -> AgentCard:
         ],
         version=config.version,
         capabilities=AgentCapabilities(
-            extensions=config.extensions or None,
+            extensions=[_to_agent_extension(e) for e in config.extensions] or None,
             streaming=config.streaming,
             push_notifications=config.push_notifications,
             state_transition_history=False,

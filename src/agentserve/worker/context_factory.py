@@ -61,6 +61,7 @@ class ContextFactory:
             metadata=message.metadata or {},
             emitter=self._emitter,
             cancel_event=cancel_event,
+            storage=self._storage,
             history=history,
             previous_artifacts=previous_artifacts,
         )

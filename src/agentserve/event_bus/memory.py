@@ -50,8 +50,8 @@ class InMemoryEventBus(EventBus):
             else:
                 self._event_subscribers.pop(task_id, None)
 
-    def subscribe(self, task_id: str) -> AsyncIterator[StreamEvent]:
-        """Return an async iterator of stream events for a task."""
+    async def subscribe(self, task_id: str) -> AsyncIterator[StreamEvent]:
+        """Subscribe to stream events for a task. Setup may be async."""
         return self._subscribe_iter(task_id)
 
     async def _subscribe_iter(self, task_id: str) -> AsyncIterator[StreamEvent]:

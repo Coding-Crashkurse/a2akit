@@ -1,7 +1,12 @@
 """agentserve — A2A agent framework in one import."""
 
-from agentserve.agent_card import AgentCardConfig, SkillConfig
-from agentserve.broker import Broker, InMemoryBroker
+from agentserve.agent_card import AgentCardConfig, ExtensionConfig, SkillConfig
+from agentserve.broker import (
+    Broker,
+    CancelRegistry,
+    InMemoryBroker,
+    InMemoryCancelRegistry,
+)
 from agentserve.event_bus import EventBus, InMemoryEventBus
 from agentserve.event_emitter import DefaultEventEmitter, EventEmitter
 from agentserve.server import A2AServer
@@ -21,12 +26,15 @@ __all__ = [
     "A2AServer",
     "AgentCardConfig",
     "Broker",
+    "CancelRegistry",
     "ContextMismatchError",
+    "ExtensionConfig",
     "DefaultEventEmitter",
     "EventBus",
     "EventEmitter",
     "FileInfo",
     "InMemoryBroker",
+    "InMemoryCancelRegistry",
     "InMemoryEventBus",
     "InMemoryStorage",
     "ListTasksQuery",
