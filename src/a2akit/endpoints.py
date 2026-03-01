@@ -15,9 +15,9 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Path, Query, Requ
 from fastapi.responses import JSONResponse
 from sse_starlette import EventSourceResponse
 
-from agentserve.schema import DirectReply, StreamEvent
-from agentserve.storage.base import ListTasksQuery, TaskNotCancelableError, TaskNotFoundError
-from agentserve.task_manager import TaskManager
+from a2akit.schema import DirectReply, StreamEvent
+from a2akit.storage.base import ListTasksQuery, TaskNotCancelableError, TaskNotFoundError
+from a2akit.task_manager import TaskManager
 
 SUPPORTED_A2A_VERSION = "0.3.0"
 
@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 def _sanitize_task_for_client(task: Task) -> Task:
     """Strip framework-internal metadata keys before client serialization.
 
-    Keys prefixed with ``_`` are internal (e.g. ``_agentserve_direct_reply``,
+    Keys prefixed with ``_`` are internal (e.g. ``_a2akit_direct_reply``,
     ``_idempotency_key``) and must not leak to external clients.
     """
     md = task.metadata
@@ -273,7 +273,7 @@ def build_a2a_router() -> APIRouter:
 
 def build_discovery_router(card_config) -> APIRouter:
     """Build the agent card discovery router."""
-    from agentserve.agent_card import build_agent_card, external_base_url
+    from a2akit.agent_card import build_agent_card, external_base_url
 
     router = APIRouter()
 

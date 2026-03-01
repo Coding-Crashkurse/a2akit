@@ -7,10 +7,10 @@ from typing import Any
 from a2a.types import Artifact as A2AArtifact
 from a2a.types import Message, Part, TextPart
 
-from agentserve.broker.base import CancelScope
-from agentserve.event_emitter import EventEmitter
-from agentserve.storage import Storage
-from agentserve.worker.base import (
+from a2akit.broker.base import CancelScope
+from a2akit.event_emitter import EventEmitter
+from a2akit.storage import Storage
+from a2akit.worker.base import (
     HistoryMessage,
     PreviousArtifact,
     TaskContextImpl,

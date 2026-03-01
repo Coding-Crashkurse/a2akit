@@ -12,8 +12,8 @@ from anyio.streams.memory import (
     MemoryObjectSendStream,
 )
 
-from agentserve.event_bus.base import EventBus
-from agentserve.schema import StreamEvent
+from a2akit.event_bus.base import EventBus
+from a2akit.schema import StreamEvent
 
 
 class InMemoryEventBus(EventBus):

@@ -1,6 +1,6 @@
 """Simple echo worker — returns the user's input back."""
 
-from agentserve import A2AServer, AgentCardConfig, TaskContext, Worker
+from a2akit import A2AServer, AgentCardConfig, TaskContext, Worker
 
 
 class EchoWorker(Worker):

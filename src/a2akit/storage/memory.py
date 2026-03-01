@@ -9,7 +9,7 @@ from typing import Any
 
 from a2a.types import Artifact, Message, Task, TaskState, TaskStatus
 
-from agentserve.storage.base import (
+from a2akit.storage.base import (
     TERMINAL_STATES,
     ArtifactWrite,
     ConcurrencyError,

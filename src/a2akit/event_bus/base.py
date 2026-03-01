@@ -6,7 +6,7 @@ from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
 from typing import AsyncContextManager, Self
 
-from agentserve.schema import StreamEvent
+from a2akit.schema import StreamEvent
 
 
 class EventBus(ABC):

@@ -18,13 +18,13 @@ from a2a.types import (
     TaskStatusUpdateEvent,
 )
 
-from agentserve.broker import Broker, CancelRegistry
-from agentserve.cancel import cancel_task_in_storage
-from agentserve.event_bus.base import EventBus
-from agentserve.event_emitter import DefaultEventEmitter
-from agentserve.schema import DIRECT_REPLY_KEY, DirectReply, StreamEvent
-from agentserve.storage import Storage
-from agentserve.storage.base import (
+from a2akit.broker import Broker, CancelRegistry
+from a2akit.cancel import cancel_task_in_storage
+from a2akit.event_bus.base import EventBus
+from a2akit.event_emitter import DefaultEventEmitter
+from a2akit.schema import DIRECT_REPLY_KEY, DirectReply, StreamEvent
+from a2akit.storage import Storage
+from a2akit.storage.base import (
     TERMINAL_STATES,
     ContextMismatchError,
     ListTasksQuery,
@@ -49,7 +49,7 @@ def _is_agent_role(role: str | Role | None) -> bool:
 def _find_direct_reply(task: Task) -> Message | None:
     """Extract direct-reply message if the worker used ``reply_directly()``.
 
-    Checks ``task.metadata`` for the ``_agentserve_direct_reply`` marker
+    Checks ``task.metadata`` for the ``_a2akit_direct_reply`` marker
     whose value is the ``message_id`` of the direct-reply message.
     Returns ``None`` for normal task responses.
     """

@@ -1,6 +1,6 @@
 """Storage package — persistence interfaces and backends."""
 
-from agentserve.storage.base import (
+from a2akit.storage.base import (
     ArtifactWrite,
     ConcurrencyError,
     ContextMismatchError,
@@ -13,7 +13,7 @@ from agentserve.storage.base import (
     TaskTerminalStateError,
     UnsupportedOperationError,
 )
-from agentserve.storage.memory import InMemoryStorage
+from a2akit.storage.memory import InMemoryStorage
 
 __all__ = [
     "ArtifactWrite",

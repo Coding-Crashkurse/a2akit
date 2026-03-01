@@ -1,7 +1,7 @@
 """Worker package — user-facing ABCs, execution context, and adapter."""
 
-from agentserve.worker.adapter import WorkerAdapter
-from agentserve.worker.base import (
+from a2akit.worker.adapter import WorkerAdapter
+from a2akit.worker.base import (
     FileInfo,
     HistoryMessage,
     PreviousArtifact,
@@ -9,7 +9,7 @@ from agentserve.worker.base import (
     TaskContextImpl,
     Worker,
 )
-from agentserve.worker.context_factory import ContextFactory
+from a2akit.worker.context_factory import ContextFactory
 
 __all__ = [
     "ContextFactory",

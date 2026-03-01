@@ -16,8 +16,8 @@ from a2a.types import (
     TextPart,
 )
 
-from agentserve.event_emitter import EventEmitter
-from agentserve.storage.base import (
+from a2akit.event_emitter import EventEmitter
+from a2akit.storage.base import (
     TERMINAL_STATES,
     ConcurrencyError,
     Storage,

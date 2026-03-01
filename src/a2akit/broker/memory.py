@@ -11,7 +11,7 @@ import anyio
 from a2a.types import MessageSendParams
 from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
 
-from agentserve.broker.base import (
+from a2akit.broker.base import (
     Broker,
     CancelRegistry,
     CancelScope,

@@ -8,9 +8,9 @@ from typing import Any
 
 from a2a.types import Message, TaskState
 
-from agentserve.event_bus.base import EventBus
-from agentserve.schema import StreamEvent
-from agentserve.storage.base import ArtifactWrite, Storage
+from a2akit.event_bus.base import EventBus
+from a2akit.schema import StreamEvent
+from a2akit.storage.base import ArtifactWrite, Storage
 
 logger = logging.getLogger(__name__)
 

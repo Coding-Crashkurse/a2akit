@@ -6,7 +6,7 @@ from typing import TypedDict
 from langgraph.config import get_stream_writer
 from langgraph.graph import END, START, StateGraph
 
-from agentserve import A2AServer, AgentCardConfig, TaskContext, Worker
+from a2akit import A2AServer, AgentCardConfig, TaskContext, Worker
 
 TOTAL = 10
 BROKEN = {4, 7}

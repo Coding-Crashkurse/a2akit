@@ -1,13 +1,13 @@
 """Broker package — task scheduling, cancellation, and event fan-out."""
 
-from agentserve.broker.base import (
+from a2akit.broker.base import (
     Broker,
     CancelRegistry,
     CancelScope,
     OperationHandle,
     TaskOperation,
 )
-from agentserve.broker.memory import InMemoryBroker, InMemoryCancelRegistry
+from a2akit.broker.memory import InMemoryBroker, InMemoryCancelRegistry
 
 __all__ = [
     "Broker",

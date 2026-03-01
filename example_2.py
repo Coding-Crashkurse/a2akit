@@ -2,7 +2,7 @@
 
 import asyncio
 
-from agentserve import A2AServer, AgentCardConfig, TaskContext, Worker
+from a2akit import A2AServer, AgentCardConfig, TaskContext, Worker
 
 
 class StreamingWorker(Worker):

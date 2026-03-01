@@ -9,16 +9,16 @@ from typing import Any
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from agentserve.agent_card import AgentCardConfig
-from agentserve.broker import (
+from a2akit.agent_card import AgentCardConfig
+from a2akit.broker import (
     Broker,
     CancelRegistry,
     InMemoryBroker,
     InMemoryCancelRegistry,
 )
-from agentserve.endpoints import build_a2a_router, build_discovery_router
-from agentserve.event_bus import EventBus, InMemoryEventBus
-from agentserve.storage import (
+from a2akit.endpoints import build_a2a_router, build_discovery_router
+from a2akit.event_bus import EventBus, InMemoryEventBus
+from a2akit.storage import (
     ContextMismatchError,
     InMemoryStorage,
     Storage,
@@ -27,8 +27,8 @@ from agentserve.storage import (
     TaskTerminalStateError,
     UnsupportedOperationError,
 )
-from agentserve.task_manager import TaskManager
-from agentserve.worker import Worker, WorkerAdapter
+from a2akit.task_manager import TaskManager
+from a2akit.worker import Worker, WorkerAdapter
 
 logger = logging.getLogger(__name__)
 

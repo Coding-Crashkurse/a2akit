@@ -1,16 +1,16 @@
-"""agentserve — A2A agent framework in one import."""
+"""a2akit — A2A agent framework in one import."""
 
-from agentserve.agent_card import AgentCardConfig, ExtensionConfig, SkillConfig
-from agentserve.broker import (
+from a2akit.agent_card import AgentCardConfig, ExtensionConfig, SkillConfig
+from a2akit.broker import (
     Broker,
     CancelRegistry,
     InMemoryBroker,
     InMemoryCancelRegistry,
 )
-from agentserve.event_bus import EventBus, InMemoryEventBus
-from agentserve.event_emitter import DefaultEventEmitter, EventEmitter
-from agentserve.server import A2AServer
-from agentserve.storage import (
+from a2akit.event_bus import EventBus, InMemoryEventBus
+from a2akit.event_emitter import DefaultEventEmitter, EventEmitter
+from a2akit.server import A2AServer
+from a2akit.storage import (
     ArtifactWrite,
     ContextMismatchError,
     InMemoryStorage,
@@ -21,9 +21,9 @@ from agentserve.storage import (
     TaskTerminalStateError,
     UnsupportedOperationError,
 )
-from agentserve.storage.base import ListTasksQuery, ListTasksResult
-from agentserve.task_manager import TaskManager
-from agentserve.worker import FileInfo, TaskContext, Worker
+from a2akit.storage.base import ListTasksQuery, ListTasksResult
+from a2akit.task_manager import TaskManager
+from a2akit.worker import FileInfo, TaskContext, Worker
 
 __all__ = [
     "A2AServer",

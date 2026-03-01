@@ -1,8 +1,8 @@
-# agentserve
+# a2akit
 
 A2A-compliant agent framework. One `Worker` class, one `handle()` method — no protocol plumbing in your business logic.
 
-## Why agentserve?
+## Why a2akit?
 
 The official A2A SDK gives you low-level building blocks: `EventQueue`, `TaskUpdater`, `RequestContext`, `Part(root=TextPart(...))`, `ServerError`, `new_task()`, ... all of this leaks into your agent code.
 
@@ -37,7 +37,7 @@ class MyExecutor(AgentExecutor):
 
 You need to understand `EventQueue`, `TaskUpdater`, `RequestContext`, `Part`, `TextPart`, `ServerError`, `new_task`, `TaskNotCancelableError` — all protocol internals that have nothing to do with what your agent actually does.
 
-The same thing with **agentserve**:
+The same thing with **a2akit**:
 
 ```python
 class MyWorker(Worker):
@@ -150,7 +150,7 @@ curl http://localhost:8000/v1/tasks/TASK_ID_HERE
 
 ## Architecture
 
-`agentserve` allows you to bring your own `Storage`, `Broker`, `EventBus`, `CancelRegistry` and `Worker`.
+`a2akit` allows you to bring your own `Storage`, `Broker`, `EventBus`, `CancelRegistry` and `Worker`.
 You can also leverage the in-memory implementations for development.
 
 Let's have a look at how those components fit together:
@@ -195,7 +195,7 @@ graph TD
 Define agent skills without importing A2A types:
 
 ```python
-from agentserve import A2AServer, AgentCardConfig, SkillConfig, Worker
+from a2akit import A2AServer, AgentCardConfig, SkillConfig, Worker
 
 server = A2AServer(
     worker=MyWorker(),
@@ -233,7 +233,7 @@ server = A2AServer(
 Implement `Storage`, `Broker`, `EventBus`, or `CancelRegistry` ABCs and pass them to `A2AServer`:
 
 ```python
-from agentserve import A2AServer, AgentCardConfig
+from a2akit import A2AServer, AgentCardConfig
 
 server = A2AServer(
     worker=MyWorker(),

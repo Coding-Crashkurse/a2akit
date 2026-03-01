@@ -21,14 +21,14 @@ from a2a.types import (
     TextPart,
 )
 
-from agentserve.broker import Broker, CancelRegistry, OperationHandle
-from agentserve.cancel import cancel_task_in_storage
-from agentserve.event_bus.base import EventBus
-from agentserve.event_emitter import DefaultEventEmitter, EventEmitter
-from agentserve.storage import Storage
-from agentserve.storage.base import TERMINAL_STATES, ConcurrencyError, TaskTerminalStateError
-from agentserve.worker.base import Worker
-from agentserve.worker.context_factory import ContextFactory
+from a2akit.broker import Broker, CancelRegistry, OperationHandle
+from a2akit.cancel import cancel_task_in_storage
+from a2akit.event_bus.base import EventBus
+from a2akit.event_emitter import DefaultEventEmitter, EventEmitter
+from a2akit.storage import Storage
+from a2akit.storage.base import TERMINAL_STATES, ConcurrencyError, TaskTerminalStateError
+from a2akit.worker.base import Worker
+from a2akit.worker.context_factory import ContextFactory
 
 logger = logging.getLogger(__name__)
 

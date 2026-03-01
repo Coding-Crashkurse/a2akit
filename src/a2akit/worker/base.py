@@ -26,10 +26,10 @@ from a2a.types import (
     TextPart,
 )
 
-from agentserve.broker.base import CancelScope
-from agentserve.event_emitter import EventEmitter
-from agentserve.schema import DIRECT_REPLY_KEY, DirectReply
-from agentserve.storage.base import (
+from a2akit.broker.base import CancelScope
+from a2akit.event_emitter import EventEmitter
+from a2akit.schema import DIRECT_REPLY_KEY, DirectReply
+from a2akit.storage.base import (
     TERMINAL_STATES,
     ArtifactWrite,
     ConcurrencyError,
