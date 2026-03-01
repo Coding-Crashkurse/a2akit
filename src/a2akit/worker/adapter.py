@@ -7,7 +7,7 @@ import uuid
 from collections.abc import AsyncIterator, Callable
 from contextlib import AsyncExitStack, asynccontextmanager
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import anyio
 from a2a.types import (
@@ -21,14 +21,16 @@ from a2a.types import (
     TextPart,
 )
 
-from a2akit.broker import Broker, CancelRegistry, OperationHandle
 from a2akit.cancel import cancel_task_in_storage
-from a2akit.event_bus.base import EventBus
 from a2akit.event_emitter import DefaultEventEmitter, EventEmitter
-from a2akit.storage import Storage
 from a2akit.storage.base import TERMINAL_STATES, ConcurrencyError, TaskTerminalStateError
-from a2akit.worker.base import Worker
 from a2akit.worker.context_factory import ContextFactory
+
+if TYPE_CHECKING:
+    from a2akit.broker import Broker, CancelRegistry, OperationHandle
+    from a2akit.event_bus.base import EventBus
+    from a2akit.storage import Storage
+    from a2akit.worker.base import Worker
 
 logger = logging.getLogger(__name__)
 
@@ -70,9 +72,7 @@ class WorkerAdapter:
         self._emitter = DefaultEventEmitter(event_bus, storage)
         self._context_factory = ContextFactory(self._emitter, storage)
         self._max_retries = max_retries
-        self._semaphore = (
-            anyio.Semaphore(max_concurrent_tasks) if max_concurrent_tasks else None
-        )
+        self._semaphore = anyio.Semaphore(max_concurrent_tasks) if max_concurrent_tasks else None
         self._task_lock_factory = task_lock_factory
 
     @asynccontextmanager
@@ -155,9 +155,7 @@ class WorkerAdapter:
         if op.operation == "run":
             await self._run_task(op.params, is_new_task=op.is_new_task)
 
-    async def _run_task(
-        self, params: MessageSendParams, *, is_new_task: bool = False
-    ) -> None:
+    async def _run_task(self, params: MessageSendParams, *, is_new_task: bool = False) -> None:
         """Execute the user worker for a submitted task.
 
         When ``task_lock_factory`` is configured, acquires a per-task
@@ -195,19 +193,13 @@ class WorkerAdapter:
                 # to avoid double-writing.
                 current = await self._storage.load_task(task_id)
                 if not current or current.status.state not in TERMINAL_STATES:
-                    await self._mark_canceled(
-                        self._storage, self._emitter, task_id, context_id
-                    )
+                    await self._mark_canceled(self._storage, self._emitter, task_id, context_id)
                 return
 
-            ctx = await self._context_factory.build(
-                message, cancel_event, is_new_task=is_new_task
-            )
+            ctx = await self._context_factory.build(message, cancel_event, is_new_task=is_new_task)
 
             try:
-                working_version = await emitter.update_task(
-                    task_id, state=TaskState.working
-                )
+                working_version = await emitter.update_task(task_id, state=TaskState.working)
             except TaskTerminalStateError:
                 # Task was already terminated (e.g., canceled before the
                 # worker picked it up).  Nothing to do — just clean up.
@@ -227,21 +219,15 @@ class WorkerAdapter:
                         "(complete/fail/reject/respond/request_input/request_auth)"
                     )
             except anyio.get_cancelled_exc_class():
-                await self._mark_canceled(
-                    self._storage, self._emitter, task_id, context_id
-                )
+                await self._mark_canceled(self._storage, self._emitter, task_id, context_id)
             except TaskTerminalStateError:
                 # Task reached terminal state during processing
                 # (e.g., force-cancel wrote 'canceled' concurrently).
                 # Nothing to do — cleanup runs in finally.
-                logger.info(
-                    "Task %s reached terminal state during processing", task_id
-                )
+                logger.info("Task %s reached terminal state during processing", task_id)
             except Exception as exc:
                 logger.exception("Worker error for task %s", task_id)
-                await self._mark_failed(
-                    emitter, self._storage, task_id, context_id, str(exc)
-                )
+                await self._mark_failed(emitter, self._storage, task_id, context_id, str(exc))
         finally:
             await self._event_bus.cleanup(task_id)
             await self._cancel_registry.cleanup(task_id)

@@ -2,14 +2,11 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator, AsyncIterator, Callable, Coroutine
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
-from typing import Any, Self
+from typing import TYPE_CHECKING, Any, Self
 
 import anyio
-from a2a.types import MessageSendParams
-from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
 
 from a2akit.broker.base import (
     Broker,
@@ -19,6 +16,12 @@ from a2akit.broker.base import (
     TaskOperation,
     _RunTask,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator, Callable, Coroutine
+
+    from a2a.types import MessageSendParams
+    from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
 
 
 class AnyioCancelScope(CancelScope):
@@ -114,9 +117,9 @@ class InMemoryBroker(Broker):
         """Create memory streams."""
         self._aexit_stack = AsyncExitStack()
         await self._aexit_stack.__aenter__()
-        self._ops_write, self._ops_read = anyio.create_memory_object_stream[
-            _EnqueuedOp
-        ](max_buffer_size=self._ops_buffer)
+        self._ops_write, self._ops_read = anyio.create_memory_object_stream[_EnqueuedOp](
+            max_buffer_size=self._ops_buffer
+        )
         await self._aexit_stack.enter_async_context(self._ops_write)
         await self._aexit_stack.enter_async_context(self._ops_read)
         return self
@@ -126,9 +129,7 @@ class InMemoryBroker(Broker):
         if self._aexit_stack is not None:
             await self._aexit_stack.__aexit__(exc_type, exc_value, traceback)
 
-    async def run_task(
-        self, params: MessageSendParams, *, is_new_task: bool = False
-    ) -> None:
+    async def run_task(self, params: MessageSendParams, *, is_new_task: bool = False) -> None:
         """Enqueue a run-task operation."""
         await self._ops_write.send(
             _EnqueuedOp(_RunTask(operation="run", params=params, is_new_task=is_new_task))
@@ -146,9 +147,7 @@ class InMemoryBroker(Broker):
         do NOT use ``async with self._ops_read`` here (double-close).
         """
         async for envelope in self._ops_read:
-            yield InMemoryOperationHandle(
-                envelope.op, self._requeue, envelope.attempt
-            )
+            yield InMemoryOperationHandle(envelope.op, self._requeue, envelope.attempt)
 
     async def _requeue(self, envelope: _EnqueuedOp) -> None:
         """Re-enqueue an operation after nack."""

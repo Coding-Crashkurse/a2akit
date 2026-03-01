@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import logging
 from abc import ABC, abstractmethod
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from a2a.types import Message, TaskState
+if TYPE_CHECKING:
+    from a2a.types import Message, TaskState
 
-from a2akit.event_bus.base import EventBus
-from a2akit.schema import StreamEvent
-from a2akit.storage.base import ArtifactWrite, Storage
+    from a2akit.event_bus.base import EventBus
+    from a2akit.schema import StreamEvent
+    from a2akit.storage.base import ArtifactWrite, Storage
 
 logger = logging.getLogger(__name__)
 

@@ -2,19 +2,21 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from a2a.types import Artifact as A2AArtifact
 from a2a.types import Message, Part, TextPart
 
-from a2akit.broker.base import CancelScope
-from a2akit.event_emitter import EventEmitter
-from a2akit.storage import Storage
 from a2akit.worker.base import (
     HistoryMessage,
     PreviousArtifact,
     TaskContextImpl,
 )
+
+if TYPE_CHECKING:
+    from a2akit.broker.base import CancelScope
+    from a2akit.event_emitter import EventEmitter
+    from a2akit.storage import Storage
 
 
 class ContextFactory:
@@ -40,9 +42,7 @@ class ContextFactory:
         if not is_new_task and message.task_id:
             task = await self._storage.load_task(message.task_id)
             if task:
-                history = self._convert_history(
-                    task.history or [], message.message_id or ""
-                )
+                history = self._convert_history(task.history or [], message.message_id or "")
                 previous_artifacts = self._convert_artifacts(task.artifacts or [])
 
         # initial_version starts as None; WorkerAdapter seeds ctx._version
@@ -66,15 +66,11 @@ class ContextFactory:
     def _extract_text(parts: list[Part]) -> str:
         """Join all text parts of a message into a single string."""
         return "\n".join(
-            part.root.text
-            for part in parts
-            if isinstance(part.root, TextPart) and part.root.text
+            part.root.text for part in parts if isinstance(part.root, TextPart) and part.root.text
         )
 
     @staticmethod
-    def _convert_history(
-        messages: list[Any], current_message_id: str
-    ) -> list[HistoryMessage]:
+    def _convert_history(messages: list[Any], current_message_id: str) -> list[HistoryMessage]:
         """Convert A2A Messages to HistoryMessage wrappers, excluding current."""
         result: list[HistoryMessage] = []
         for msg in messages:

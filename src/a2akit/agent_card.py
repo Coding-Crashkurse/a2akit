@@ -47,12 +47,8 @@ class AgentCardConfig(BaseModel):
     push_notifications: bool = False
     supports_extended_card: bool = False
 
-    input_modes: list[str] = Field(
-        default_factory=lambda: ["application/json", "text/plain"]
-    )
-    output_modes: list[str] = Field(
-        default_factory=lambda: ["application/json", "text/plain"]
-    )
+    input_modes: list[str] = Field(default_factory=lambda: ["application/json", "text/plain"])
+    output_modes: list[str] = Field(default_factory=lambda: ["application/json", "text/plain"])
 
 
 def _to_agent_skill(skill: SkillConfig) -> AgentSkill:
@@ -105,8 +101,6 @@ def external_base_url(headers: dict, scheme: str, netloc: str) -> str:
     """Derive the external base URL from request headers (proxy-aware)."""
     resolved_scheme = (headers.get("x-forwarded-proto") or scheme).split(",")[0].strip()
     resolved_host = (
-        (headers.get("x-forwarded-host") or headers.get("host") or netloc)
-        .split(",")[0]
-        .strip()
+        (headers.get("x-forwarded-host") or headers.get("host") or netloc).split(",")[0].strip()
     )
     return f"{resolved_scheme}://{resolved_host}"

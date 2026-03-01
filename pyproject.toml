@@ -4,24 +4,96 @@ build-backend = "hatchling.build"
 
 [project]
 name = "a2akit"
-version = "0.1.0"
-description = "A2A-compliant agent framework – from zero to running agent in 10 lines."
+version = "0.0.1"
+description = "A2A agent framework in one import."
 readme = "README.md"
+license = "MIT"
 requires-python = ">=3.11"
-license = { text = "MIT" }
+authors = [
+    { name = "Markus Lang" },
+]
+keywords = ["a2a", "agent", "agent-to-agent", "framework", "async"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Framework :: FastAPI",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries :: Application Frameworks",
+    "Typing :: Typed",
+]
 dependencies = [
-    "a2a-sdk>=0.2.0",
-    "fastapi>=0.115.0",
-    "sse-starlette>=2.0.0",
-    "anyio>=4.0.0",
-    "pydantic>=2.0.0",
-    "uvicorn[standard]>=0.30.0",
+    "a2a-sdk>=0.3,<1",
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
+    "sse-starlette>=2.0",
+    "anyio>=4.4",
+    "pydantic>=2.7",
 ]
 
 [project.optional-dependencies]
-postgres = ["sqlalchemy[asyncio]>=2.0.0", "asyncpg>=0.30.0"]
 langgraph = ["langgraph>=0.2.0"]
-dev = ["pytest", "pytest-asyncio", "httpx"]
+
+[project.urls]
+Homepage = "https://github.com/markuslang1987/a2akit"
+Documentation = "https://github.com/markuslang1987/a2akit#readme"
+Repository = "https://github.com/markuslang1987/a2akit"
+Changelog = "https://github.com/markuslang1987/a2akit/blob/main/CHANGELOG.md"
+Issues = "https://github.com/markuslang1987/a2akit/issues"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    "pytest-cov>=5.0",
+    "httpx>=0.27",
+    "ruff>=0.8",
+    "asgi-lifespan>=2.1.0",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/a2akit"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+addopts = [
+    "--strict-markers",
+    "--tb=short",
+    "-q",
+    "--cov=a2akit",
+    "--cov-report=term-missing",
+    "--cov-fail-under=90",
+]
+markers = [
+    "slow: Tests that take >2s",
+]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 99
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "F", "E", "W", "I", "N", "UP", "B", "A", "C4",
+    "SIM", "TCH", "RUF", "PT", "ASYNC", "T20", "PIE",
+    "RSE", "RET", "TID",
+]
+ignore = ["E501", "RET504", "SIM108"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["T20"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["a2akit"]
+
+[tool.ruff.lint.flake8-tidy-imports]
+ban-relative-imports = "all"
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+docstring-code-format = true

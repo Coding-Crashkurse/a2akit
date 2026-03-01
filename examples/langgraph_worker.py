@@ -14,9 +14,7 @@ DELAY = 0.5
 
 
 class FileProcessingState(TypedDict):
-    """Empty state – the graph communicates via custom stream events."""
-
-    pass
+    """Empty state -- the graph communicates via custom stream events."""
 
 
 async def process_node(state: FileProcessingState):

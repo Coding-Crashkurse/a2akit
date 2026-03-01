@@ -6,3 +6,6 @@ __pycache__/
 dist/
 build/
 .claude/
+.pytest_cache/
+.ruff_cache/
+.coverage

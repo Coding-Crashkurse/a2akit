@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import logging
 from abc import ABC, abstractmethod
-from collections.abc import AsyncGenerator, AsyncIterator
-from types import TracebackType
-from typing import Generic, Literal, Self, TypeVar
+from typing import TYPE_CHECKING, Generic, Literal, Self, TypeVar
 
 from a2a.types import MessageSendParams
 from pydantic import BaseModel
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
+    from types import TracebackType
 
 logger = logging.getLogger(__name__)
 
@@ -112,9 +114,7 @@ class Broker(ABC):
     """Abstract broker for task scheduling."""
 
     @abstractmethod
-    async def run_task(
-        self, params: MessageSendParams, *, is_new_task: bool = False
-    ) -> None: ...
+    async def run_task(self, params: MessageSendParams, *, is_new_task: bool = False) -> None: ...
 
     @abstractmethod
     async def shutdown(self) -> None:

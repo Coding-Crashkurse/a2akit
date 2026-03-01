@@ -19,13 +19,11 @@ class DirectReply:
     message: Message
 
 
-StreamEvent = (
-    Task | Message | TaskStatusUpdateEvent | TaskArtifactUpdateEvent | DirectReply
-)
+StreamEvent = Task | Message | TaskStatusUpdateEvent | TaskArtifactUpdateEvent | DirectReply
 
 # Internal task-metadata key set by reply_directly().
 # Stored in Task.metadata (not Message.metadata) so it survives
 # storage round-trips without polluting user-facing message data.
 DIRECT_REPLY_KEY = "_a2akit_direct_reply"
 
-__all__ = ["DirectReply", "StreamEvent", "DIRECT_REPLY_KEY"]
+__all__ = ["DIRECT_REPLY_KEY", "DirectReply", "StreamEvent"]

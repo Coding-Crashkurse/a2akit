@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import uuid
 from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 
 from a2a.types import (
     Message,
@@ -16,13 +17,15 @@ from a2a.types import (
     TextPart,
 )
 
-from a2akit.event_emitter import EventEmitter
 from a2akit.storage.base import (
     TERMINAL_STATES,
     ConcurrencyError,
     Storage,
     TaskTerminalStateError,
 )
+
+if TYPE_CHECKING:
+    from a2akit.event_emitter import EventEmitter
 
 logger = logging.getLogger(__name__)
 

@@ -2,18 +2,22 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
+from typing import TYPE_CHECKING
 
 import anyio
 from a2a.types import TaskStatusUpdateEvent
-from anyio.streams.memory import (
-    MemoryObjectReceiveStream,
-    MemoryObjectSendStream,
-)
 
 from a2akit.event_bus.base import EventBus
 from a2akit.schema import StreamEvent
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
+
+    from anyio.streams.memory import (
+        MemoryObjectReceiveStream,
+        MemoryObjectSendStream,
+    )
 
 
 class InMemoryEventBus(EventBus):
@@ -22,9 +26,7 @@ class InMemoryEventBus(EventBus):
     def __init__(self, event_buffer: int = 200) -> None:
         """Initialize buffer size and internal state."""
         self._event_buffer = event_buffer
-        self._event_subscribers: dict[
-            str, list[MemoryObjectSendStream[StreamEvent]]
-        ] = {}
+        self._event_subscribers: dict[str, list[MemoryObjectSendStream[StreamEvent]]] = {}
         self._subscriber_lock: anyio.Lock | None = None
 
     async def __aenter__(self):

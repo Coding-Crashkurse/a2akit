@@ -8,7 +8,7 @@ import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from a2a.types import (
     Artifact,
@@ -26,8 +26,6 @@ from a2a.types import (
     TextPart,
 )
 
-from a2akit.broker.base import CancelScope
-from a2akit.event_emitter import EventEmitter
 from a2akit.schema import DIRECT_REPLY_KEY, DirectReply
 from a2akit.storage.base import (
     TERMINAL_STATES,
@@ -36,6 +34,10 @@ from a2akit.storage.base import (
     Storage,
     TaskTerminalStateError,
 )
+
+if TYPE_CHECKING:
+    from a2akit.broker.base import CancelScope
+    from a2akit.event_emitter import EventEmitter
 
 logger = logging.getLogger(__name__)
 
@@ -120,8 +122,7 @@ def _build_parts(
 
     if not parts:
         raise ValueError(
-            "At least one content parameter (text, data, file_bytes, file_url) "
-            "must be provided."
+            "At least one content parameter (text, data, file_bytes, file_url) must be provided."
         )
 
     return parts
@@ -222,9 +223,7 @@ class TaskContext(ABC):
         """Mark the task as completed, optionally with a final text artifact."""
 
     @abstractmethod
-    async def complete_json(
-        self, data: dict | list, *, artifact_id: str = "final-answer"
-    ) -> None:
+    async def complete_json(self, data: dict | list, *, artifact_id: str = "final-answer") -> None:
         """Complete task with a JSON data artifact."""
 
     @abstractmethod
@@ -371,15 +370,11 @@ class TaskContextImpl(TaskContext):
         self._cancel_event = cancel_event
         self._storage = storage
         self._history = history if history is not None else []
-        self._previous_artifacts = (
-            previous_artifacts if previous_artifacts is not None else []
-        )
+        self._previous_artifacts = previous_artifacts if previous_artifacts is not None else []
         self._turn_ended: bool = False
         self._version: int | None = initial_version
 
-    def _make_agent_message(
-        self, parts: list[Part], *, metadata: dict | None = None
-    ) -> Message:
+    def _make_agent_message(self, parts: list[Part], *, metadata: dict | None = None) -> Message:
         """Create an agent Message pre-filled with task_id and context_id."""
         return Message(
             role=Role.agent,
@@ -407,12 +402,12 @@ class TaskContextImpl(TaskContext):
                 task_id, expected_version=self._version, **kwargs
             )
             self._version = new_version
-        except ConcurrencyError:
+        except ConcurrencyError as exc:
             task = await self._storage.load_task(task_id)
             if task is None or task.status.state in TERMINAL_STATES:
                 raise TaskTerminalStateError(
                     f"Task {task_id} reached terminal state during update"
-                )
+                ) from exc
             # Non-terminal version mismatch: retry with fresh version.
             fresh_version = await self._storage.get_version(task_id)
             new_version = await self._emitter.update_task(
@@ -484,9 +479,7 @@ class TaskContextImpl(TaskContext):
         await self._emit_status(TaskState.completed)
         self._turn_ended = True
 
-    async def complete_json(
-        self, data: dict | list, *, artifact_id: str = "final-answer"
-    ) -> None:
+    async def complete_json(self, data: dict | list, *, artifact_id: str = "final-answer") -> None:
         """Complete task with a JSON data artifact."""
         data_parts = [Part(DataPart(data=data))]
         artifact = Artifact(
@@ -531,9 +524,7 @@ class TaskContextImpl(TaskContext):
     async def reject(self, reason: str | None = None) -> None:
         """Reject the task — agent decides not to perform it."""
         reject_text = reason or "Task rejected."
-        reject_message = self._make_agent_message(
-            [Part(TextPart(text=reject_text))]
-        )
+        reject_message = self._make_agent_message([Part(TextPart(text=reject_text))])
         await self._versioned_update(
             self.task_id,
             state=TaskState.rejected,
@@ -545,9 +536,7 @@ class TaskContextImpl(TaskContext):
 
     async def request_input(self, question: str) -> None:
         """Transition to input-required state."""
-        input_message = self._make_agent_message(
-            [Part(TextPart(text=question))]
-        )
+        input_message = self._make_agent_message([Part(TextPart(text=question))])
         await self._versioned_update(
             self.task_id,
             state=TaskState.input_required,
@@ -560,9 +549,7 @@ class TaskContextImpl(TaskContext):
     async def request_auth(self, details: str | None = None) -> None:
         """Transition to auth-required state for secondary credentials."""
         auth_text = details or "Authentication required."
-        auth_message = self._make_agent_message(
-            [Part(TextPart(text=auth_text))]
-        )
+        auth_message = self._make_agent_message([Part(TextPart(text=auth_text))])
         await self._versioned_update(
             self.task_id,
             state=TaskState.auth_required,
@@ -614,9 +601,7 @@ class TaskContextImpl(TaskContext):
         """Emit an intermediate status update (state stays working)."""
         status_msg = None
         if message is not None:
-            status_msg = self._make_agent_message(
-                [Part(TextPart(text=message))]
-            )
+            status_msg = self._make_agent_message([Part(TextPart(text=message))])
             await self._versioned_update(
                 self.task_id,
                 state=TaskState.working,

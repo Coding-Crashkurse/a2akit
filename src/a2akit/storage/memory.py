@@ -131,17 +131,13 @@ class InMemoryStorage(Storage[ContextT]):
 
         task_id = str(uuid.uuid4())
         # Copy message for history — Storage MUST NOT mutate the input.
-        history_msg = message.model_copy(
-            update={"task_id": task_id, "context_id": context_id}
-        )
+        history_msg = message.model_copy(update={"task_id": task_id, "context_id": context_id})
 
         task = Task(
             id=task_id,
             context_id=context_id,
             kind="task",
-            status=TaskStatus(
-                state=TaskState.submitted, timestamp=datetime.now(UTC).isoformat()
-            ),
+            status=TaskStatus(state=TaskState.submitted, timestamp=datetime.now(UTC).isoformat()),
             history=[history_msg],
             artifacts=[],
             metadata={"_idempotency_key": idempotency_key} if idempotency_key else None,
@@ -217,16 +213,10 @@ class InMemoryStorage(Storage[ContextT]):
         self._versions[task_id] = new_version
         return new_version
 
-    def _apply_artifact(
-        self, task: Task, artifact: Artifact, *, append: bool
-    ) -> None:
+    def _apply_artifact(self, task: Task, artifact: Artifact, *, append: bool) -> None:
         """Apply a single artifact upsert to the task (in-place)."""
         existing_idx = next(
-            (
-                i
-                for i, a in enumerate(task.artifacts)
-                if a.artifact_id == artifact.artifact_id
-            ),
+            (i for i, a in enumerate(task.artifacts) if a.artifact_id == artifact.artifact_id),
             None,
         )
         if existing_idx is not None:

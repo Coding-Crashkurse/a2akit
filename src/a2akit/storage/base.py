@@ -3,15 +3,16 @@
 from __future__ import annotations
 
 import logging
-import types
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Any, Generic, Self
-
-from typing_extensions import TypeVar
+from typing import TYPE_CHECKING, Any, Generic, Self
 
 from a2a.types import Artifact, Message, Task, TaskState
 from pydantic import BaseModel, Field
+from typing_extensions import TypeVar
+
+if TYPE_CHECKING:
+    import types
 
 logger = logging.getLogger(__name__)
 

@@ -5,9 +5,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
-from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from a2a.types import (
     Message,
@@ -18,12 +17,9 @@ from a2a.types import (
     TaskStatusUpdateEvent,
 )
 
-from a2akit.broker import Broker, CancelRegistry
 from a2akit.cancel import cancel_task_in_storage
-from a2akit.event_bus.base import EventBus
 from a2akit.event_emitter import DefaultEventEmitter
 from a2akit.schema import DIRECT_REPLY_KEY, DirectReply, StreamEvent
-from a2akit.storage import Storage
 from a2akit.storage.base import (
     TERMINAL_STATES,
     ContextMismatchError,
@@ -35,6 +31,13 @@ from a2akit.storage.base import (
     TaskTerminalStateError,
     UnsupportedOperationError,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator
+
+    from a2akit.broker import Broker, CancelRegistry
+    from a2akit.event_bus.base import EventBus
+    from a2akit.storage import Storage
 
 logger = logging.getLogger(__name__)
 
@@ -81,9 +84,7 @@ class TaskManager:
     cancel_registry: CancelRegistry
     default_blocking_timeout_s: float = 30.0
     cancel_force_timeout_s: float = 60.0
-    _background_tasks: set[asyncio.Task[Any]] = field(
-        default_factory=set, init=False, repr=False
-    )
+    _background_tasks: set[asyncio.Task[Any]] = field(default_factory=set, init=False, repr=False)
 
     def _track_background(self, coro) -> asyncio.Task:
         """Create a tracked background task with exception logging."""
@@ -96,9 +97,7 @@ class TaskManager:
         """Log exceptions from background tasks and remove from tracking set."""
         self._background_tasks.discard(fut)
         if not fut.cancelled() and fut.exception():
-            logger.error(
-                "Background task failed: %s", fut.exception(), exc_info=fut.exception()
-            )
+            logger.error("Background task failed: %s", fut.exception(), exc_info=fut.exception())
 
     async def _submit_task(self, context_id: str, message: Message) -> Task:
         """Route, validate, and persist a user message submission.
@@ -121,12 +120,11 @@ class TaskManager:
         # Bind message to task before persisting (message binding contract).
         message.context_id = message.context_id or task.context_id
         new_state = self._compute_state_transition(task)
-        await self.storage.update_task(
-            task.id, state=new_state, messages=[message]
-        )
+        await self.storage.update_task(task.id, state=new_state, messages=[message])
         # Re-load to return the updated Task object.
         updated = await self.storage.load_task(task.id)
-        assert updated is not None, f"Task {task.id} vanished after update"
+        if updated is None:
+            raise RuntimeError(f"Task {task.id} vanished after update")
         return updated
 
     async def _load_and_validate(self, message: Message) -> Task:
@@ -154,9 +152,11 @@ class TaskManager:
                 f"task {message.task_id!r} contextId {task.context_id!r}"
             )
 
-        if current not in {TaskState.input_required, TaskState.auth_required}:
-            if not _is_agent_role(getattr(message, "role", None)):
-                raise TaskNotAcceptingMessagesError(current)
+        if current not in {
+            TaskState.input_required,
+            TaskState.auth_required,
+        } and not _is_agent_role(getattr(message, "role", None)):
+            raise TaskNotAcceptingMessagesError(current)
 
         return task
 
@@ -188,9 +188,7 @@ class TaskManager:
             # events published between broker.run_task and subscribe would
             # be lost if we subscribed after.
             async with self.event_bus.subscribe(task.id) as sub:
-                self._track_background(
-                    self.broker.run_task(params, is_new_task=is_new)
-                )
+                self._track_background(self.broker.run_task(params, is_new_task=is_new))
 
                 try:
                     async with asyncio.timeout(self.default_blocking_timeout_s):
@@ -203,16 +201,12 @@ class TaskManager:
                     logger.info("Blocking wait timed out for task %s", task.id)
         else:
             # Non-blocking: just enqueue and return immediately
-            self._track_background(
-                self.broker.run_task(params, is_new_task=is_new)
-            )
+            self._track_background(self.broker.run_task(params, is_new_task=is_new))
 
         if direct_message is not None:
             return direct_message
 
-        history_len = getattr(
-            getattr(params, "configuration", None), "history_length", None
-        )
+        history_len = getattr(getattr(params, "configuration", None), "history_length", None)
         latest = await self.storage.load_task(task.id, history_length=history_len)
         if latest is not None:
             reply = _find_direct_reply(latest)
@@ -220,9 +214,7 @@ class TaskManager:
                 return reply
         return latest or task
 
-    async def stream_message(
-        self, params: MessageSendParams
-    ) -> AsyncGenerator[StreamEvent, None]:
+    async def stream_message(self, params: MessageSendParams) -> AsyncGenerator[StreamEvent, None]:
         """Submit a task, yield initial snapshot, then stream live events.
 
         Subscribes to the event bus BEFORE starting the broker to prevent
@@ -233,9 +225,7 @@ class TaskManager:
         context_id = msg.context_id or str(uuid.uuid4())
         task = await self._submit_task(context_id, msg)
 
-        history_len = getattr(
-            getattr(params, "configuration", None), "history_length", None
-        )
+        history_len = getattr(getattr(params, "configuration", None), "history_length", None)
         if history_len is not None:
             trimmed = await self.storage.load_task(task.id, history_length=history_len)
             if trimmed is not None:
@@ -249,9 +239,7 @@ class TaskManager:
         # Subscribe BEFORE starting broker — prevents race condition
         # where events published between run_task and subscribe are lost.
         async with self.event_bus.subscribe(task.id) as sub:
-            self._track_background(
-                self.broker.run_task(params, is_new_task=is_new)
-            )
+            self._track_background(self.broker.run_task(params, is_new_task=is_new))
 
             async for ev in sub:
                 yield ev
@@ -271,22 +259,16 @@ class TaskManager:
         if task is None:
             raise TaskNotFoundError(f"Task {task_id} not found")
         if task.status.state in TERMINAL_STATES:
-            raise UnsupportedOperationError(
-                "Task is in a terminal state; cannot subscribe"
-            )
+            raise UnsupportedOperationError("Task is in a terminal state; cannot subscribe")
 
         # Subscribe BEFORE yielding — prevents event loss between
         # load_task and subscribe.
-        async with self.event_bus.subscribe(
-            task_id, after_event_id=after_event_id
-        ) as sub:
+        async with self.event_bus.subscribe(task_id, after_event_id=after_event_id) as sub:
             yield task
             async for ev in sub:
                 yield ev
 
-    async def get_task(
-        self, task_id: str, history_length: int | None = None
-    ) -> Task | None:
+    async def get_task(self, task_id: str, history_length: int | None = None) -> Task | None:
         """Load a single task by ID."""
         return await self.storage.load_task(task_id, history_length)
 
@@ -330,34 +312,31 @@ class TaskManager:
         await self.cancel_registry.request_cancel(task_id)
 
         # Force-cancel fallback for the case where the worker doesn't react.
-        self._track_background(
-            self._force_cancel_after(task_id, self.cancel_force_timeout_s)
-        )
+        self._track_background(self._force_cancel_after(task_id, self.cancel_force_timeout_s))
 
         latest = await self.storage.load_task(task_id)
         if latest is None:
             raise TaskNotFoundError(f"Task {task_id} disappeared during cancel")
         return latest
 
-    async def _force_cancel_after(self, task_id: str, timeout: float) -> None:
+    async def _force_cancel_after(self, task_id: str, deadline: float) -> None:
         """Force-cancel a task if it hasn't reached a terminal state.
 
-        Waits ``timeout`` seconds, then checks Storage.  If the task is
+        Waits ``deadline`` seconds, then checks Storage.  If the task is
         still non-terminal, transitions it to ``canceled`` directly,
         publishes a final status event so SSE subscribers can close,
         and cleans up EventBus and CancelRegistry resources.
         """
-        await asyncio.sleep(timeout)
+        await asyncio.sleep(deadline)
         try:
             task = await self.storage.load_task(task_id)
             if task is None:
                 return
             if task.status.state not in TERMINAL_STATES:
                 logger.warning(
-                    "Force-canceling task %s after %ss timeout "
-                    "(worker did not cooperate)",
+                    "Force-canceling task %s after %ss timeout (worker did not cooperate)",
                     task_id,
-                    timeout,
+                    deadline,
                 )
                 emitter = DefaultEventEmitter(self.event_bus, self.storage)
                 await cancel_task_in_storage(

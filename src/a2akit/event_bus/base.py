@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator
-from typing import AsyncContextManager, Self
+from typing import TYPE_CHECKING, Self
 
-from a2akit.schema import StreamEvent
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
+    from contextlib import AbstractAsyncContextManager
+
+    from a2akit.schema import StreamEvent
 
 
 class EventBus(ABC):
@@ -27,7 +30,7 @@ class EventBus(ABC):
     @abstractmethod
     def subscribe(
         self, task_id: str, *, after_event_id: str | None = None
-    ) -> AsyncContextManager[AsyncIterator[StreamEvent]]:
+    ) -> AbstractAsyncContextManager[AsyncIterator[StreamEvent]]:
         """Subscribe to stream events for a task.
 
         MUST be used as an async context manager:
@@ -69,5 +72,5 @@ class EventBus(ABC):
         """Enter the async context manager."""
         return self
 
-    async def __aexit__(self, exc_type, exc_value, traceback) -> None:
+    async def __aexit__(self, exc_type, exc_value, traceback) -> None:  # noqa: B027
         """Exit the async context manager."""

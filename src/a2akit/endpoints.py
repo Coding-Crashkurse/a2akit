@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import AsyncIterator
+from typing import TYPE_CHECKING
 
 from a2a.types import (
     MessageSendParams,
@@ -15,9 +15,14 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Path, Query, Requ
 from fastapi.responses import JSONResponse
 from sse_starlette import EventSourceResponse
 
+from a2akit.agent_card import AgentCardConfig, build_agent_card, external_base_url
 from a2akit.schema import DirectReply, StreamEvent
 from a2akit.storage.base import ListTasksQuery, TaskNotCancelableError, TaskNotFoundError
-from a2akit.task_manager import TaskManager
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
+
+    from a2akit.task_manager import TaskManager
 
 SUPPORTED_A2A_VERSION = "0.3.0"
 
@@ -115,9 +120,7 @@ def build_a2a_router() -> APIRouter:
     router = APIRouter(dependencies=[Depends(_check_a2a_version)])
 
     @router.post("/v1/message:send")
-    async def message_send(
-        request: Request, params: MessageSendParams
-    ) -> JSONResponse:
+    async def message_send(request: Request, params: MessageSendParams) -> JSONResponse:
         """Submit a message and return the task or message directly.
 
         Returns a JSON-serialized ``Task`` object in the normal case.
@@ -132,15 +135,11 @@ def build_a2a_router() -> APIRouter:
         if isinstance(result, Task):
             result = _sanitize_task_for_client(result)
         return JSONResponse(
-            content=json.loads(
-                result.model_dump_json(by_alias=True, exclude_none=True)
-            )
+            content=json.loads(result.model_dump_json(by_alias=True, exclude_none=True))
         )
 
     @router.post("/v1/message:stream")
-    async def message_stream(
-        request: Request, params: MessageSendParams
-    ) -> EventSourceResponse:
+    async def message_stream(request: Request, params: MessageSendParams) -> EventSourceResponse:
         """Submit a message and stream events via SSE."""
         params = _validate_ids(params)
         tm = _get_tm(request)
@@ -179,9 +178,7 @@ def build_a2a_router() -> APIRouter:
             )
         t = _sanitize_task_for_client(t)
         return JSONResponse(
-            content=json.loads(
-                t.model_dump_json(by_alias=True, exclude_none=True)
-            )
+            content=json.loads(t.model_dump_json(by_alias=True, exclude_none=True))
         )
 
     @router.get("/v1/tasks")
@@ -209,9 +206,7 @@ def build_a2a_router() -> APIRouter:
         result = await tm.list_tasks(query)
         result.tasks = [_sanitize_task_for_client(t) for t in result.tasks]
         return JSONResponse(
-            content=json.loads(
-                result.model_dump_json(by_alias=True, exclude_none=True)
-            )
+            content=json.loads(result.model_dump_json(by_alias=True, exclude_none=True))
         )
 
     @router.post("/v1/tasks/{task_id}:cancel")
@@ -225,18 +220,16 @@ def build_a2a_router() -> APIRouter:
             result = await tm.cancel_task(task_id)
             result = _sanitize_task_for_client(result)
             return JSONResponse(
-                content=json.loads(
-                    result.model_dump_json(by_alias=True, exclude_none=True)
-                )
+                content=json.loads(result.model_dump_json(by_alias=True, exclude_none=True))
             )
-        except TaskNotFoundError:
+        except TaskNotFoundError as err:
             raise HTTPException(
                 status_code=404, detail={"code": -32001, "message": "Task not found"}
-            )
-        except TaskNotCancelableError:
+            ) from err
+        except TaskNotCancelableError as err:
             raise HTTPException(
                 status_code=409, detail={"code": -32002, "message": "Task is not cancelable"}
-            )
+            ) from err
 
     @router.post("/v1/tasks/{task_id}:subscribe")
     async def tasks_subscribe(
@@ -271,9 +264,8 @@ def build_a2a_router() -> APIRouter:
     return router
 
 
-def build_discovery_router(card_config) -> APIRouter:
+def build_discovery_router(card_config: AgentCardConfig) -> APIRouter:
     """Build the agent card discovery router."""
-    from a2akit.agent_card import build_agent_card, external_base_url
 
     router = APIRouter()
 
@@ -287,9 +279,7 @@ def build_discovery_router(card_config) -> APIRouter:
         )
         card = build_agent_card(card_config, base_url)
         return JSONResponse(
-            content=json.loads(
-                card.model_dump_json(by_alias=True, exclude_none=True)
-            )
+            content=json.loads(card.model_dump_json(by_alias=True, exclude_none=True))
         )
 
     return router

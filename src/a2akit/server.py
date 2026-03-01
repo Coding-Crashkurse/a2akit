@@ -1,15 +1,14 @@
-"""A2AServer – one-liner setup for a fully functional A2A agent."""
+"""A2AServer - one-liner setup for a fully functional A2A agent."""
 
 from __future__ import annotations
 
 import logging
 from contextlib import asynccontextmanager
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from a2akit.agent_card import AgentCardConfig
 from a2akit.broker import (
     Broker,
     CancelRegistry,
@@ -29,6 +28,9 @@ from a2akit.storage import (
 )
 from a2akit.task_manager import TaskManager
 from a2akit.worker import Worker, WorkerAdapter
+
+if TYPE_CHECKING:
+    from a2akit.agent_card import AgentCardConfig
 
 logger = logging.getLogger(__name__)
 
@@ -142,27 +144,27 @@ def _register_exception_handlers(app: FastAPI) -> None:
     """Register JSON-RPC style exception handlers for A2A storage errors."""
 
     @app.exception_handler(TaskNotFoundError)
-    async def _(_req: Request, _exc: TaskNotFoundError):
-        return JSONResponse(
-            status_code=404, content={"code": -32001, "message": "Task not found"}
-        )
+    async def handle_task_not_found(_req: Request, _exc: TaskNotFoundError) -> JSONResponse:
+        return JSONResponse(status_code=404, content={"code": -32001, "message": "Task not found"})
 
     @app.exception_handler(TaskTerminalStateError)
-    async def _(_req: Request, _exc: TaskTerminalStateError):
+    async def handle_task_terminal(_req: Request, _exc: TaskTerminalStateError) -> JSONResponse:
         return JSONResponse(
             status_code=409,
             content={"code": -32004, "message": "Task is terminal; cannot continue"},
         )
 
     @app.exception_handler(ContextMismatchError)
-    async def _(_req: Request, _exc: ContextMismatchError):
+    async def handle_context_mismatch(_req: Request, _exc: ContextMismatchError) -> JSONResponse:
         return JSONResponse(
             status_code=400,
             content={"code": -32602, "message": "contextId does not match task"},
         )
 
     @app.exception_handler(TaskNotAcceptingMessagesError)
-    async def _(_req: Request, exc: TaskNotAcceptingMessagesError):
+    async def handle_not_accepting(
+        _req: Request, exc: TaskNotAcceptingMessagesError
+    ) -> JSONResponse:
         state = getattr(exc, "state", None)
         msg = (
             f"Task is in state {state} and does not accept messages."
@@ -172,7 +174,7 @@ def _register_exception_handlers(app: FastAPI) -> None:
         return JSONResponse(status_code=422, content={"code": -32602, "message": msg})
 
     @app.exception_handler(UnsupportedOperationError)
-    async def _(_req: Request, exc: UnsupportedOperationError):
+    async def handle_unsupported(_req: Request, exc: UnsupportedOperationError) -> JSONResponse:
         return JSONResponse(
             status_code=400,
             content={"code": -32004, "message": str(exc)},
