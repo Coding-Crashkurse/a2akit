@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from pathlib import Path
 from unittest.mock import AsyncMock
 
 import httpx
@@ -13,6 +14,8 @@ from asgi_lifespan import LifespanManager
 
 from a2akit import A2AServer, AgentCardConfig, TaskContext, Worker
 from a2akit.hooks import LifecycleHooks
+
+_EXAMPLES_DIR = Path(__file__).resolve().parent.parent / "examples"
 
 
 class EchoWorker(Worker):
@@ -302,12 +305,10 @@ async def test_hook_printer_example_runs():
     """Import and run examples/hook_printer.py end-to-end."""
     import importlib.util
     import sys
-    from pathlib import Path
 
-    spec = importlib.util.spec_from_file_location(
-        "hook_printer",
-        Path(__file__).resolve().parent.parent / "examples" / "hook_printer.py",
-    )
+    # Compute path at module level to avoid ASYNC240 (no I/O in async functions)
+    example_path = str(_EXAMPLES_DIR / "hook_printer.py")
+    spec = importlib.util.spec_from_file_location("hook_printer", example_path)
     mod = importlib.util.module_from_spec(spec)
     sys.modules["hook_printer"] = mod
     spec.loader.exec_module(mod)
