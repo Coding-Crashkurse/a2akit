@@ -74,7 +74,7 @@ class PreviousArtifact:
 def _build_parts(
     *,
     text: str | None = None,
-    data: dict | list | None = None,
+    data: dict[str, Any] | list[Any] | None = None,
     file_bytes: bytes | None = None,
     file_url: str | None = None,
     media_type: str | None = None,
@@ -153,9 +153,9 @@ def _extract_files(parts: list[Any]) -> list[FileInfo]:
     return files
 
 
-def _extract_data_parts(parts: list[Any]) -> list[dict]:
+def _extract_data_parts(parts: list[Any]) -> list[dict[str, Any]]:
     """Extract structured data dicts from raw message parts."""
-    result: list[dict] = []
+    result: list[dict[str, Any]] = []
     for part in parts:
         root = getattr(part, "root", part)
         if isinstance(root, DataPart) and isinstance(root.data, dict):
@@ -180,7 +180,7 @@ class TaskContext(ABC):
     message_id: str
     user_text: str
     parts: list[Any]
-    metadata: dict
+    metadata: dict[str, Any]
 
     @property
     @abstractmethod
@@ -216,7 +216,7 @@ class TaskContext(ABC):
 
     @property
     @abstractmethod
-    def data_parts(self) -> list[dict]:
+    def data_parts(self) -> list[dict[str, Any]]:
         """All structured data parts from the user message."""
 
     @property
@@ -236,7 +236,9 @@ class TaskContext(ABC):
         """Mark the task as completed, optionally with a final text artifact."""
 
     @abstractmethod
-    async def complete_json(self, data: dict | list, *, artifact_id: str = "final-answer") -> None:
+    async def complete_json(
+        self, data: dict[str, Any] | list[Any], *, artifact_id: str = "final-answer"
+    ) -> None:
         """Complete task with a JSON data artifact."""
 
     @abstractmethod
@@ -295,7 +297,7 @@ class TaskContext(ABC):
         *,
         artifact_id: str,
         text: str | None = None,
-        data: dict | list | None = None,
+        data: dict[str, Any] | list[Any] | None = None,
         file_bytes: bytes | None = None,
         file_url: str | None = None,
         media_type: str | None = None,
@@ -304,7 +306,7 @@ class TaskContext(ABC):
         description: str | None = None,
         append: bool = False,
         last_chunk: bool = False,
-        metadata: dict | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> None:
         """Emit an artifact update event and persist it."""
 
@@ -322,7 +324,7 @@ class TaskContext(ABC):
     @abstractmethod
     async def emit_data_artifact(
         self,
-        data: dict | list,
+        data: dict[str, Any] | list[Any],
         *,
         artifact_id: str = "answer",
         media_type: str = "application/json",
@@ -355,7 +357,7 @@ class TaskContextImpl(TaskContext):
         message_id: str = "",
         user_text: str = "",
         parts: list[Any] | None = None,
-        metadata: dict | None = None,
+        metadata: dict[str, Any] | None = None,
         emitter: EventEmitter,
         cancel_event: CancelScope,
         storage: Storage,
@@ -389,7 +391,9 @@ class TaskContextImpl(TaskContext):
         self._version: int | None = initial_version
         self._request_context = request_context or {}
 
-    def _make_agent_message(self, parts: list[Part], *, metadata: dict | None = None) -> Message:
+    def _make_agent_message(
+        self, parts: list[Part], *, metadata: dict[str, Any] | None = None
+    ) -> Message:
         """Create an agent Message pre-filled with task_id and context_id."""
         return Message(
             role=Role.agent,
@@ -461,7 +465,7 @@ class TaskContextImpl(TaskContext):
         return _extract_files(self.parts)
 
     @property
-    def data_parts(self) -> list[dict]:
+    def data_parts(self) -> list[dict[str, Any]]:
         """All structured data parts from the user message."""
         return _extract_data_parts(self.parts)
 
@@ -499,7 +503,9 @@ class TaskContextImpl(TaskContext):
         await self._emit_status(TaskState.completed)
         self._turn_ended = True
 
-    async def complete_json(self, data: dict | list, *, artifact_id: str = "final-answer") -> None:
+    async def complete_json(
+        self, data: dict[str, Any] | list[Any], *, artifact_id: str = "final-answer"
+    ) -> None:
         """Complete task with a JSON data artifact."""
         data_parts = [Part(DataPart(data=data))]
         artifact = Artifact(
@@ -634,7 +640,7 @@ class TaskContextImpl(TaskContext):
         *,
         artifact_id: str,
         text: str | None = None,
-        data: dict | list | None = None,
+        data: dict[str, Any] | list[Any] | None = None,
         file_bytes: bytes | None = None,
         file_url: str | None = None,
         media_type: str | None = None,
@@ -643,7 +649,7 @@ class TaskContextImpl(TaskContext):
         description: str | None = None,
         append: bool = False,
         last_chunk: bool = False,
-        metadata: dict | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> None:
         """Emit an artifact update event and persist it."""
         parts = _build_parts(
@@ -695,7 +701,7 @@ class TaskContextImpl(TaskContext):
 
     async def emit_data_artifact(
         self,
-        data: dict | list,
+        data: dict[str, Any] | list[Any],
         *,
         artifact_id: str = "answer",
         media_type: str = "application/json",

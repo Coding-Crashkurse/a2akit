@@ -33,6 +33,8 @@ from a2akit.task_manager import TaskManager
 from a2akit.worker import Worker, WorkerAdapter
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
+
     from a2akit.agent_card import AgentCardConfig
     from a2akit.middleware import A2AMiddleware
 
@@ -114,7 +116,7 @@ class A2AServer:
         server = self
 
         @asynccontextmanager
-        async def lifespan(app: FastAPI):
+        async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             """Initialize and tear down storage, broker, event bus, and worker adapter."""
             storage = server._build_storage()
             broker = server._build_broker()

@@ -20,6 +20,7 @@ from a2akit.config import Settings, get_settings
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable, Coroutine
+    from types import TracebackType
 
     from a2a.types import MessageSendParams
     from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
@@ -126,7 +127,12 @@ class InMemoryBroker(Broker):
         await self._aexit_stack.enter_async_context(self._ops_read)
         return self
 
-    async def __aexit__(self, exc_type, exc_value, traceback) -> None:
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
         """Tear down the exit stack."""
         if self._aexit_stack is not None:
             await self._aexit_stack.__aexit__(exc_type, exc_value, traceback)
@@ -139,6 +145,7 @@ class InMemoryBroker(Broker):
         request_context: dict[str, Any] | None = None,
     ) -> None:
         """Enqueue a run-task operation."""
+        assert self._ops_write is not None
         await self._ops_write.send(
             _EnqueuedOp(
                 _RunTask(
@@ -161,9 +168,11 @@ class InMemoryBroker(Broker):
         Stream lifecycle is managed by __aenter__/__aexit__ —
         do NOT use ``async with self._ops_read`` here (double-close).
         """
+        assert self._ops_read is not None
         async for envelope in self._ops_read:
             yield InMemoryOperationHandle(envelope.op, self._requeue, envelope.attempt)
 
     async def _requeue(self, envelope: _EnqueuedOp) -> None:
         """Re-enqueue an operation after nack."""
+        assert self._ops_write is not None
         await self._ops_write.send(envelope)

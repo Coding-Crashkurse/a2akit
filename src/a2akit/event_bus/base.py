@@ -72,5 +72,10 @@ class EventBus(ABC):
         """Enter the async context manager."""
         return self
 
-    async def __aexit__(self, exc_type, exc_value, traceback) -> None:  # noqa: B027
+    async def __aexit__(  # noqa: B027
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: object,
+    ) -> None:
         """Exit the async context manager."""

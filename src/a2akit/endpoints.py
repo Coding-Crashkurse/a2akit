@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import AsyncIterable
 from typing import TYPE_CHECKING
 
 from a2a.types import (
@@ -22,6 +21,8 @@ from a2akit.schema import DirectReply, StreamEvent
 from a2akit.storage.base import ListTasksQuery, TaskNotCancelableError, TaskNotFoundError
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncIterable, AsyncIterator
+
     from a2akit.task_manager import TaskManager
 
 SUPPORTED_A2A_VERSION = "0.3.0"
@@ -76,8 +77,6 @@ def _check_a2a_version(
     client = _major_minor(a2a_version)
     supported = _major_minor(SUPPORTED_A2A_VERSION)
 
-    # Pre-1.0: minor versions are breaking, match both
-    # Post-1.0: only major needs to match (standard semver)
     if supported[0] == "0":
         compatible = client == supported
     else:
@@ -98,7 +97,7 @@ def _check_a2a_version(
 
 def _get_tm(request: Request) -> TaskManager:
     """Extract the TaskManager from app state."""
-    tm = getattr(request.app.state, "task_manager", None)
+    tm: TaskManager | None = getattr(request.app.state, "task_manager", None)
     if tm is None:
         raise HTTPException(status_code=503, detail="TaskManager not initialized")
     return tm
@@ -115,20 +114,64 @@ def _validate_ids(params: MessageSendParams) -> MessageSendParams:
     return params
 
 
+# ---------------------------------------------------------------------------
+# SSE setup dependencies
+#
+# These run in the normal request context BEFORE FastAPI's SSE producer
+# TaskGroup is created. Any exception raised here (HTTPException, business
+# errors like TaskNotFoundError, UnsupportedOperationError) flows through
+# FastAPI's exception handlers and produces a proper HTTP error response.
+#
+# The endpoint functions themselves only contain yield statements inside
+# the SSE producer — no fallible setup code.
+# ---------------------------------------------------------------------------
+
+
+async def _stream_setup(
+    request: Request,
+    params: MessageSendParams,
+) -> tuple[StreamEvent, AsyncIterator[StreamEvent]]:
+    """Dependency: validate, run middleware, and fetch the first stream event.
+
+    Runs in normal async context so that exceptions produce proper
+    HTTP error responses instead of being wrapped in ExceptionGroup.
+    """
+    params = _validate_ids(params)
+    tm = _get_tm(request)
+    middlewares: list[A2AMiddleware] = getattr(request.app.state, "middlewares", [])
+
+    envelope = RequestEnvelope(params=params)
+    for mw in middlewares:
+        await mw.before_dispatch(envelope, request)
+
+    agen = tm.stream_message(envelope.params, request_context=envelope.context)
+    first_event = await anext(agen)
+    return first_event, agen
+
+
+async def _subscribe_setup(
+    request: Request,
+    task_id: str = Path(),
+    last_event_id: str | None = Header(None, alias="Last-Event-ID"),
+) -> tuple[StreamEvent, AsyncIterator[StreamEvent]]:
+    """Dependency: look up task, validate state, and fetch the first event.
+
+    Runs in normal async context so that TaskNotFoundError and
+    UnsupportedOperationError produce proper HTTP error responses.
+    """
+    tm = _get_tm(request)
+    agen = tm.subscribe_task(task_id, after_event_id=last_event_id)
+    first_event = await anext(agen)
+    return first_event, agen
+
+
 def build_a2a_router() -> APIRouter:
     """Build and return the complete A2A API router."""
     router = APIRouter(dependencies=[Depends(_check_a2a_version)])
 
     @router.post("/v1/message:send")
     async def message_send(request: Request, params: MessageSendParams) -> JSONResponse:
-        """Submit a message and return the task or message directly.
-
-        Returns a JSON-serialized ``Task`` object in the normal case.
-        When the worker used ``reply_directly()``, returns a JSON-serialized
-        ``Message`` instead (A2A spec §3.1.1).  Both are wrapped in a
-        ``JSONResponse`` — callers should inspect the ``kind`` field
-        (present on Task, absent on Message) to discriminate.
-        """
+        """Submit a message and return the task or message directly."""
         params = _validate_ids(params)
         tm = _get_tm(request)
         middlewares: list[A2AMiddleware] = getattr(request.app.state, "middlewares", [])
@@ -151,32 +194,21 @@ def build_a2a_router() -> APIRouter:
 
     @router.post("/v1/message:stream", response_class=EventSourceResponse)
     async def message_stream(
-        request: Request, params: MessageSendParams
+        setup: tuple[StreamEvent, AsyncIterator[StreamEvent]] = Depends(_stream_setup),
     ) -> AsyncIterable[ServerSentEvent]:
         """Submit a message and stream events via SSE.
 
-        Setup and first-event retrieval run before the first ``yield``,
-        so any errors (validation, task creation) raise before the
-        HTTP response headers are sent — producing a clean error status.
+        All fallible setup (validation, middleware, first event) runs in
+        the ``_stream_setup`` dependency — in the normal request context
+        where exceptions produce proper HTTP error responses.
+
+        This generator body runs inside FastAPI's SSE producer TaskGroup
+        and only contains yield statements.
         """
-        params = _validate_ids(params)
-        tm = _get_tm(request)
-        middlewares: list[A2AMiddleware] = getattr(request.app.state, "middlewares", [])
-
-        envelope = RequestEnvelope(params=params)
-
-        for mw in middlewares:
-            await mw.before_dispatch(envelope, request)
-
-        agen = tm.stream_message(envelope.params, request_context=envelope.context)
-        first_event = await anext(agen)
-
-        yield ServerSentEvent(raw_data=_wrap_stream_event(first_event))
+        first_event, agen = setup
         try:
+            yield ServerSentEvent(raw_data=_wrap_stream_event(first_event))
             async for ev in agen:
-                # DirectReply is an internal framework event for the
-                # non-streaming path. In SSE, skip it — the client
-                # sees the completed status via TaskStatusUpdateEvent.
                 if isinstance(ev, DirectReply):
                     continue
                 yield ServerSentEvent(raw_data=_wrap_stream_event(ev))
@@ -253,22 +285,17 @@ def build_a2a_router() -> APIRouter:
 
     @router.post("/v1/tasks/{task_id}:subscribe", response_class=EventSourceResponse)
     async def tasks_subscribe(
-        request: Request,
-        task_id: str = Path(),
-        last_event_id: str | None = Header(None, alias="Last-Event-ID"),
+        setup: tuple[StreamEvent, AsyncIterator[StreamEvent]] = Depends(_subscribe_setup),
     ) -> AsyncIterable[ServerSentEvent]:
         """Subscribe to updates for an existing task via SSE.
 
-        First event retrieval runs before the first ``yield`` so that
-        errors like ``TaskNotFoundError`` or ``UnsupportedOperationError``
-        produce a clean HTTP error status instead of aborting mid-stream.
+        All fallible setup (task lookup, terminal-state check, first event)
+        runs in the ``_subscribe_setup`` dependency — in the normal request
+        context where exceptions produce proper HTTP error responses.
         """
-        tm = _get_tm(request)
-        agen = tm.subscribe_task(task_id, after_event_id=last_event_id)
-        first_event = await anext(agen)
-
-        yield ServerSentEvent(raw_data=_wrap_stream_event(first_event))
+        first_event, agen = setup
         try:
+            yield ServerSentEvent(raw_data=_wrap_stream_event(first_event))
             async for ev in agen:
                 if isinstance(ev, DirectReply):
                     continue
@@ -277,7 +304,7 @@ def build_a2a_router() -> APIRouter:
             logger.exception("SSE subscribe stream aborted")
 
     @router.get("/v1/health")
-    async def health_check():
+    async def health_check() -> dict[str, str]:
         """Return a simple health status."""
         return {"status": "ok"}
 

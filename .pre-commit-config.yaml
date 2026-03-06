@@ -1,0 +1,22 @@
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.8.6
+    hooks:
+      - id: ruff-format
+      - id: ruff
+        args: [--fix, --exit-non-zero-on-fix]
+
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.14.1
+    hooks:
+      - id: mypy
+        files: ^src/
+        additional_dependencies:
+          - pydantic>=2.7
+          - pydantic-settings>=2.13.1
+          - fastapi>=0.135.1
+          - a2a-sdk>=0.3
+          - uvicorn>=0.29
+          - anyio>=4.4
+        args: [--config-file, pyproject.toml]
+        pass_filenames: true

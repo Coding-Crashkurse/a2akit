@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager, suppress
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Self
 
 import anyio
 from a2a.types import TaskStatusUpdateEvent
@@ -31,14 +31,18 @@ class InMemoryEventBus(EventBus):
         s = settings or get_settings()
         self._event_buffer = event_buffer if event_buffer is not None else s.event_buffer
         self._event_subscribers: dict[str, list[MemoryObjectSendStream[StreamEvent]]] = {}
-        self._subscriber_lock: anyio.Lock | None = None
+        self._subscriber_lock: anyio.Lock = anyio.Lock()
 
-    async def __aenter__(self):
+    async def __aenter__(self) -> Self:
         """Acquire the subscriber lock."""
-        self._subscriber_lock = anyio.Lock()
         return self
 
-    async def __aexit__(self, exc_type, exc_value, traceback) -> None:
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: object,
+    ) -> None:
         """Tear down (no-op for in-memory)."""
 
     async def publish(self, task_id: str, event: StreamEvent) -> str | None:

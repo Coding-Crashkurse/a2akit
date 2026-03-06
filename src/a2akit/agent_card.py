@@ -97,7 +97,7 @@ def build_agent_card(config: AgentCardConfig, base_url: str) -> AgentCard:
     )
 
 
-def external_base_url(headers: dict, scheme: str, netloc: str) -> str:
+def external_base_url(headers: dict[str, str], scheme: str, netloc: str) -> str:
     """Derive the external base URL from request headers (proxy-aware)."""
     resolved_scheme = (headers.get("x-forwarded-proto") or scheme).split(",")[0].strip()
     resolved_host = (

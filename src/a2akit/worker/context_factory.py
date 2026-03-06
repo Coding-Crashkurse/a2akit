@@ -50,7 +50,7 @@ class ContextFactory:
         # from the working-state transition's return value before calling
         # the user worker, closing the OCC chain.
         return TaskContextImpl(
-            task_id=message.task_id,
+            task_id=message.task_id or "",
             context_id=message.context_id,
             message_id=message.message_id or "",
             user_text=user_text,

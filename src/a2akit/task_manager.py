@@ -87,14 +87,14 @@ class TaskManager:
     emitter: EventEmitter | None = None
     _background_tasks: set[asyncio.Task[Any]] = field(default_factory=set, init=False, repr=False)
 
-    def _track_background(self, coro) -> asyncio.Task:
+    def _track_background(self, coro: Any) -> asyncio.Task[Any]:
         """Create a tracked background task with exception logging."""
         fut = asyncio.create_task(coro)
         self._background_tasks.add(fut)
         fut.add_done_callback(self._on_background_done)
         return fut
 
-    def _on_background_done(self, fut: asyncio.Task) -> None:
+    def _on_background_done(self, fut: asyncio.Task[Any]) -> None:
         """Log exceptions from background tasks and remove from tracking set."""
         self._background_tasks.discard(fut)
         if not fut.cancelled() and fut.exception():
@@ -138,6 +138,7 @@ class TaskManager:
             TaskNotAcceptingMessagesError: If a non-agent message is sent
                 to a task not in ``input_required``.
         """
+        assert message.task_id is not None
         task = await self.storage.load_task(message.task_id)
         if task is None:
             raise TaskNotFoundError(f"Task {message.task_id} not found")

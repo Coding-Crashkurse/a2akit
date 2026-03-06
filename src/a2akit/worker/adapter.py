@@ -268,7 +268,7 @@ class WorkerAdapter:
 
     @staticmethod
     async def _mark_failed(
-        emitter, storage: Storage, task_id: str, context_id: str | None, reason: str
+        emitter: EventEmitter, storage: Storage, task_id: str, context_id: str | None, reason: str
     ) -> None:
         """Persist failed state (with reason) and emit a final status event."""
         error_message = Message(

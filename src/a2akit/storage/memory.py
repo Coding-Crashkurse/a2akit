@@ -191,6 +191,8 @@ class InMemoryStorage(Storage[ContextT]):
             )
 
         if messages:
+            if task.history is None:
+                task.history = []
             task.history.extend(messages)
 
         if artifacts:
@@ -215,6 +217,8 @@ class InMemoryStorage(Storage[ContextT]):
 
     def _apply_artifact(self, task: Task, artifact: Artifact, *, append: bool) -> None:
         """Apply a single artifact upsert to the task (in-place)."""
+        if task.artifacts is None:
+            task.artifacts = []
         existing_idx = next(
             (i for i, a in enumerate(task.artifacts) if a.artifact_id == artifact.artifact_id),
             None,
