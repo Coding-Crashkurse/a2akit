@@ -15,6 +15,7 @@ from a2akit.broker import (
     InMemoryBroker,
     InMemoryCancelRegistry,
 )
+from a2akit.config import Settings, get_settings
 from a2akit.endpoints import build_a2a_router, build_discovery_router
 from a2akit.event_bus import EventBus, InMemoryEventBus
 from a2akit.event_emitter import DefaultEventEmitter
@@ -51,11 +52,14 @@ class A2AServer:
         broker: str | Broker = "memory",
         event_bus: str | EventBus = "memory",
         cancel_registry: CancelRegistry | None = None,
-        blocking_timeout_s: float = 30.0,
+        blocking_timeout_s: float | None = None,
+        cancel_force_timeout_s: float | None = None,
         max_concurrent_tasks: int | None = None,
         hooks: LifecycleHooks | None = None,
+        settings: Settings | None = None,
     ) -> None:
         """Store configuration for lazy initialization at startup."""
+        s = settings or get_settings()
         self._worker = worker
         self._card_config = agent_card
         self._middlewares = middlewares or []
@@ -63,8 +67,19 @@ class A2AServer:
         self._broker_spec = broker
         self._event_bus_spec = event_bus
         self._cancel_registry = cancel_registry
-        self._blocking_timeout_s = blocking_timeout_s
-        self._max_concurrent_tasks = max_concurrent_tasks
+        self._blocking_timeout_s = (
+            blocking_timeout_s if blocking_timeout_s is not None else s.blocking_timeout
+        )
+        self._cancel_force_timeout_s = (
+            cancel_force_timeout_s
+            if cancel_force_timeout_s is not None
+            else s.cancel_force_timeout
+        )
+        self._max_concurrent_tasks = (
+            max_concurrent_tasks if max_concurrent_tasks is not None else s.max_concurrent_tasks
+        )
+        self._max_retries = s.max_retries
+        self._settings = s
         self._hooks = hooks
 
     def _build_storage(self) -> Storage:
@@ -81,7 +96,7 @@ class A2AServer:
         if isinstance(self._broker_spec, Broker):
             return self._broker_spec
         if self._broker_spec == "memory":
-            return InMemoryBroker()
+            return InMemoryBroker(settings=self._settings)
         msg = f"Unknown broker backend: {self._broker_spec!r}. Use 'memory' or pass a Broker instance."
         raise ValueError(msg)
 
@@ -90,7 +105,7 @@ class A2AServer:
         if isinstance(self._event_bus_spec, EventBus):
             return self._event_bus_spec
         if self._event_bus_spec == "memory":
-            return InMemoryEventBus()
+            return InMemoryEventBus(settings=self._settings)
         msg = f"Unknown event bus backend: {self._event_bus_spec!r}. Use 'memory' or pass an EventBus instance."
         raise ValueError(msg)
 
@@ -116,6 +131,7 @@ class A2AServer:
                 event_bus,
                 cancel_registry,
                 max_concurrent_tasks=server._max_concurrent_tasks,
+                max_retries=server._max_retries,
                 emitter=emitter,
             )
             tm = TaskManager(
@@ -124,6 +140,7 @@ class A2AServer:
                 event_bus=event_bus,
                 cancel_registry=cancel_registry,
                 default_blocking_timeout_s=server._blocking_timeout_s,
+                cancel_force_timeout_s=server._cancel_force_timeout_s,
                 emitter=emitter,
             )
 

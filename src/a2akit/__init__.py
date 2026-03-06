@@ -7,6 +7,7 @@ from a2akit.broker import (
     InMemoryBroker,
     InMemoryCancelRegistry,
 )
+from a2akit.config import Settings, get_settings
 from a2akit.event_bus import EventBus, InMemoryEventBus
 from a2akit.event_emitter import DefaultEventEmitter, EventEmitter
 from a2akit.hooks import HookableEmitter, LifecycleHooks
@@ -49,6 +50,7 @@ __all__ = [
     "ListTasksQuery",
     "ListTasksResult",
     "RequestEnvelope",
+    "Settings",
     "SkillConfig",
     "Storage",
     "TaskContext",
@@ -59,4 +61,5 @@ __all__ = [
     "TaskTerminalStateError",
     "UnsupportedOperationError",
     "Worker",
+    "get_settings",
 ]

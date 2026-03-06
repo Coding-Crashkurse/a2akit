@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 import anyio
 from a2a.types import TaskStatusUpdateEvent
 
+from a2akit.config import Settings, get_settings
 from a2akit.event_bus.base import EventBus
 from a2akit.schema import StreamEvent
 
@@ -23,9 +24,12 @@ if TYPE_CHECKING:
 class InMemoryEventBus(EventBus):
     """In-memory fan-out event bus backed by anyio memory streams."""
 
-    def __init__(self, event_buffer: int = 200) -> None:
+    def __init__(
+        self, event_buffer: int | None = None, *, settings: Settings | None = None
+    ) -> None:
         """Initialize buffer size and internal state."""
-        self._event_buffer = event_buffer
+        s = settings or get_settings()
+        self._event_buffer = event_buffer if event_buffer is not None else s.event_buffer
         self._event_subscribers: dict[str, list[MemoryObjectSendStream[StreamEvent]]] = {}
         self._subscriber_lock: anyio.Lock | None = None
 

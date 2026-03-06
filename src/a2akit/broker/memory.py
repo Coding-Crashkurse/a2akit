@@ -16,6 +16,7 @@ from a2akit.broker.base import (
     TaskOperation,
     _RunTask,
 )
+from a2akit.config import Settings, get_settings
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable, Coroutine
@@ -106,9 +107,10 @@ class InMemoryOperationHandle(OperationHandle):
 class InMemoryBroker(Broker):
     """In-memory broker suitable for single-process deployments."""
 
-    def __init__(self, ops_buffer: int = 1000) -> None:
+    def __init__(self, ops_buffer: int | None = None, *, settings: Settings | None = None) -> None:
         """Initialize buffer size and internal state."""
-        self._ops_buffer = ops_buffer
+        s = settings or get_settings()
+        self._ops_buffer = ops_buffer if ops_buffer is not None else s.broker_buffer
         self._aexit_stack: AsyncExitStack | None = None
         self._ops_write: MemoryObjectSendStream[_EnqueuedOp] | None = None
         self._ops_read: MemoryObjectReceiveStream[_EnqueuedOp] | None = None

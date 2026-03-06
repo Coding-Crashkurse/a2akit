@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import AsyncIterable
 from typing import TYPE_CHECKING
 
 from a2a.types import (
@@ -13,7 +14,7 @@ from a2a.types import (
 )
 from fastapi import APIRouter, Depends, Header, HTTPException, Path, Query, Request
 from fastapi.responses import JSONResponse
-from sse_starlette import EventSourceResponse
+from fastapi.sse import EventSourceResponse, ServerSentEvent
 
 from a2akit.agent_card import AgentCardConfig, build_agent_card, external_base_url
 from a2akit.middleware import A2AMiddleware, RequestEnvelope
@@ -21,8 +22,6 @@ from a2akit.schema import DirectReply, StreamEvent
 from a2akit.storage.base import ListTasksQuery, TaskNotCancelableError, TaskNotFoundError
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
-
     from a2akit.task_manager import TaskManager
 
 SUPPORTED_A2A_VERSION = "0.3.0"
@@ -150,9 +149,16 @@ def build_a2a_router() -> APIRouter:
             content=json.loads(result.model_dump_json(by_alias=True, exclude_none=True))
         )
 
-    @router.post("/v1/message:stream")
-    async def message_stream(request: Request, params: MessageSendParams) -> EventSourceResponse:
-        """Submit a message and stream events via SSE."""
+    @router.post("/v1/message:stream", response_class=EventSourceResponse)
+    async def message_stream(
+        request: Request, params: MessageSendParams
+    ) -> AsyncIterable[ServerSentEvent]:
+        """Submit a message and stream events via SSE.
+
+        Setup and first-event retrieval run before the first ``yield``,
+        so any errors (validation, task creation) raise before the
+        HTTP response headers are sent — producing a clean error status.
+        """
         params = _validate_ids(params)
         tm = _get_tm(request)
         middlewares: list[A2AMiddleware] = getattr(request.app.state, "middlewares", [])
@@ -165,22 +171,17 @@ def build_a2a_router() -> APIRouter:
         agen = tm.stream_message(envelope.params, request_context=envelope.context)
         first_event = await anext(agen)
 
-        async def sse_gen() -> AsyncIterator[str]:
-            """Yield JSON-serialized events for the SSE response."""
-            try:
-                yield _wrap_stream_event(first_event)
-                async for ev in agen:
-                    # DirectReply is an internal framework event for the
-                    # non-streaming path. In SSE, skip it — the client
-                    # sees the completed status via TaskStatusUpdateEvent.
-                    if isinstance(ev, DirectReply):
-                        continue
-                    yield _wrap_stream_event(ev)
-            except Exception:
-                logger.exception("SSE stream aborted")
-                return
-
-        return EventSourceResponse(sse_gen())
+        yield ServerSentEvent(raw_data=_wrap_stream_event(first_event))
+        try:
+            async for ev in agen:
+                # DirectReply is an internal framework event for the
+                # non-streaming path. In SSE, skip it — the client
+                # sees the completed status via TaskStatusUpdateEvent.
+                if isinstance(ev, DirectReply):
+                    continue
+                yield ServerSentEvent(raw_data=_wrap_stream_event(ev))
+        except Exception:
+            logger.exception("SSE stream aborted")
 
     @router.get("/v1/tasks/{task_id}")
     async def tasks_get(
@@ -250,30 +251,30 @@ def build_a2a_router() -> APIRouter:
                 status_code=409, detail={"code": -32002, "message": "Task is not cancelable"}
             ) from err
 
-    @router.post("/v1/tasks/{task_id}:subscribe")
+    @router.post("/v1/tasks/{task_id}:subscribe", response_class=EventSourceResponse)
     async def tasks_subscribe(
         request: Request,
         task_id: str = Path(),
         last_event_id: str | None = Header(None, alias="Last-Event-ID"),
-    ) -> EventSourceResponse:
-        """Subscribe to updates for an existing task via SSE."""
+    ) -> AsyncIterable[ServerSentEvent]:
+        """Subscribe to updates for an existing task via SSE.
+
+        First event retrieval runs before the first ``yield`` so that
+        errors like ``TaskNotFoundError`` or ``UnsupportedOperationError``
+        produce a clean HTTP error status instead of aborting mid-stream.
+        """
         tm = _get_tm(request)
         agen = tm.subscribe_task(task_id, after_event_id=last_event_id)
         first_event = await anext(agen)
 
-        async def sse_gen() -> AsyncIterator[str]:
-            """Yield JSON-serialized events for the SSE response."""
-            try:
-                yield _wrap_stream_event(first_event)
-                async for ev in agen:
-                    if isinstance(ev, DirectReply):
-                        continue
-                    yield _wrap_stream_event(ev)
-            except Exception:
-                logger.exception("SSE subscribe stream aborted")
-                return
-
-        return EventSourceResponse(sse_gen())
+        yield ServerSentEvent(raw_data=_wrap_stream_event(first_event))
+        try:
+            async for ev in agen:
+                if isinstance(ev, DirectReply):
+                    continue
+                yield ServerSentEvent(raw_data=_wrap_stream_event(ev))
+        except Exception:
+            logger.exception("SSE subscribe stream aborted")
 
     @router.get("/v1/health")
     async def health_check():

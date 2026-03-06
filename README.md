@@ -311,6 +311,37 @@ Hooks fire after a successful Storage write. If the write fails (e.g.
 `TaskTerminalStateError` from a concurrent cancel), the hook does not fire.
 The Storage terminal-state guard provides exactly-once delivery per task.
 
+## Configuration
+
+a2akit reads settings from environment variables prefixed with `A2AKIT_`.
+Every setting has a sensible default; explicit constructor parameters always
+take priority.
+
+| Variable                        | Default  | Purpose                                      |
+|---------------------------------|----------|----------------------------------------------|
+| `A2AKIT_BLOCKING_TIMEOUT`       | `30.0`   | Seconds `message:send` blocks for a result   |
+| `A2AKIT_CANCEL_FORCE_TIMEOUT`   | `60.0`   | Seconds before force-cancel kicks in          |
+| `A2AKIT_MAX_CONCURRENT_TASKS`   | *(none)* | Worker parallelism (`None` = unlimited)       |
+| `A2AKIT_MAX_RETRIES`            | `3`      | Broker retry attempts on worker crash         |
+| `A2AKIT_BROKER_BUFFER`          | `1000`   | InMemoryBroker queue depth                    |
+| `A2AKIT_EVENT_BUFFER`           | `200`    | InMemoryEventBus fan-out buffer per task      |
+| `A2AKIT_LOG_LEVEL`              | *(unset)*| Root `a2akit` logger level (e.g. `DEBUG`)     |
+
+**Priority:** constructor parameter > environment variable > built-in default.
+
+**Example:**
+
+    export A2AKIT_BLOCKING_TIMEOUT=10
+    export A2AKIT_LOG_LEVEL=DEBUG
+    export A2AKIT_MAX_CONCURRENT_TASKS=4
+
+**Programmatic override:**
+
+    from a2akit import A2AServer, Settings
+
+    custom = Settings(blocking_timeout=5.0, max_retries=5)
+    server = A2AServer(worker=..., agent_card=..., settings=custom)
+
 ## A2AServer Configuration
 
 ```python
