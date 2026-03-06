@@ -4,7 +4,7 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
-## [0.0.2] — 2026-03-06
+## [0.0.2] — 2026-03-05
 
 ### Added
 - **Lifecycle hooks** via `LifecycleHooks` dataclass and `HookableEmitter` decorator.
@@ -17,6 +17,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 - `HookableEmitter` wraps any `EventEmitter` implementation — no changes to the ABC.
 - `hooks` parameter on `A2AServer` for easy opt-in.
 - `examples/hook_printer.py` — reference example demonstrating all lifecycle hooks.
+- **Middleware system** via `A2AMiddleware` base class and `RequestEnvelope` dataclass.
+  - `before_dispatch` — runs before TaskManager processes the request (extract secrets, read headers, enrich context).
+  - `after_dispatch` — runs after TaskManager returns (logging, metrics, cleanup). Reverse execution order.
+  - `RequestEnvelope` separates persistent `params` from transient `context` — secrets never reach Storage.
+  - `ctx.request_context` exposes transient middleware data inside workers.
+  - Streaming endpoints run middleware in setup dependency; `after_dispatch` is skipped by design.
+- `middlewares` parameter on `A2AServer` for easy registration.
+- `examples/middleware_secret.py` — reference example demonstrating secret extraction middleware.
 
 ## [0.0.1] — 2025-XX-XX
 
