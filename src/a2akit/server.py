@@ -16,6 +16,7 @@ from a2akit.broker import (
     InMemoryCancelRegistry,
 )
 from a2akit.config import Settings, get_settings
+from a2akit.dependencies import DependencyContainer
 from a2akit.endpoints import build_a2a_router, build_discovery_router
 from a2akit.event_bus import EventBus, InMemoryEventBus
 from a2akit.event_emitter import DefaultEventEmitter
@@ -59,6 +60,7 @@ class A2AServer:
         max_concurrent_tasks: int | None = None,
         hooks: LifecycleHooks | None = None,
         settings: Settings | None = None,
+        dependencies: dict[Any, Any] | None = None,
     ) -> None:
         """Store configuration for lazy initialization at startup."""
         s = settings or get_settings()
@@ -83,6 +85,7 @@ class A2AServer:
         self._max_retries = s.max_retries
         self._settings = s
         self._hooks = hooks
+        self._deps = DependencyContainer(dependencies)
 
     def _build_storage(self) -> Storage:
         """Resolve the storage spec into a Storage instance."""
@@ -135,6 +138,7 @@ class A2AServer:
                 max_concurrent_tasks=server._max_concurrent_tasks,
                 max_retries=server._max_retries,
                 emitter=emitter,
+                deps=server._deps,
             )
             tm = TaskManager(
                 broker=broker,
@@ -152,6 +156,7 @@ class A2AServer:
             app.state.event_bus = event_bus
             app.state.middlewares = server._middlewares
 
+            await server._deps.startup()
             async with storage, broker, event_bus, adapter.run():
                 try:
                     yield
@@ -161,6 +166,7 @@ class A2AServer:
                     del app.state.storage
                     del app.state.event_bus
                     del app.state.middlewares
+                    await server._deps.shutdown()
 
         fastapi_kwargs.setdefault("title", self._card_config.name)
         fastapi_kwargs.setdefault("version", self._card_config.version)

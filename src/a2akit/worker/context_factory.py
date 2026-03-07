@@ -15,6 +15,7 @@ from a2akit.worker.base import (
 
 if TYPE_CHECKING:
     from a2akit.broker.base import CancelScope
+    from a2akit.dependencies import DependencyContainer
     from a2akit.event_emitter import EventEmitter
     from a2akit.storage import Storage
 
@@ -22,9 +23,16 @@ if TYPE_CHECKING:
 class ContextFactory:
     """Translates an A2A Message into a clean TaskContextImpl."""
 
-    def __init__(self, emitter: EventEmitter, storage: Storage) -> None:
+    def __init__(
+        self,
+        emitter: EventEmitter,
+        storage: Storage,
+        *,
+        deps: DependencyContainer | None = None,
+    ) -> None:
         self._emitter = emitter
         self._storage = storage
+        self._deps = deps
 
     async def build(
         self,
@@ -62,6 +70,7 @@ class ContextFactory:
             history=history,
             previous_artifacts=previous_artifacts,
             request_context=request_context,
+            deps=self._deps,
         )
 
     @staticmethod

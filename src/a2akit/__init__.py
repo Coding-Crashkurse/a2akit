@@ -8,6 +8,7 @@ from a2akit.broker import (
     InMemoryCancelRegistry,
 )
 from a2akit.config import Settings, get_settings
+from a2akit.dependencies import Dependency, DependencyContainer
 from a2akit.event_bus import EventBus, InMemoryEventBus
 from a2akit.event_emitter import DefaultEventEmitter, EventEmitter
 from a2akit.hooks import HookableEmitter, LifecycleHooks
@@ -37,6 +38,8 @@ __all__ = [
     "CancelRegistry",
     "ContextMismatchError",
     "DefaultEventEmitter",
+    "Dependency",
+    "DependencyContainer",
     "EventBus",
     "EventEmitter",
     "ExtensionConfig",

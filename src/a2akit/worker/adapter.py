@@ -28,6 +28,7 @@ from a2akit.worker.context_factory import ContextFactory
 
 if TYPE_CHECKING:
     from a2akit.broker import Broker, CancelRegistry, OperationHandle
+    from a2akit.dependencies import DependencyContainer
     from a2akit.event_bus.base import EventBus
     from a2akit.storage import Storage
     from a2akit.worker.base import Worker
@@ -64,6 +65,7 @@ class WorkerAdapter:
         max_retries: int = 3,
         task_lock_factory: TaskLockFactory | None = None,
         emitter: EventEmitter | None = None,
+        deps: DependencyContainer | None = None,
     ) -> None:
         self._user_worker = user_worker
         self._broker = broker
@@ -71,7 +73,7 @@ class WorkerAdapter:
         self._event_bus = event_bus
         self._cancel_registry = cancel_registry
         self._emitter = emitter or DefaultEventEmitter(event_bus, storage)
-        self._context_factory = ContextFactory(self._emitter, storage)
+        self._context_factory = ContextFactory(self._emitter, storage, deps=deps)
         self._max_retries = max_retries
         self._semaphore = anyio.Semaphore(max_concurrent_tasks) if max_concurrent_tasks else None
         self._task_lock_factory = task_lock_factory

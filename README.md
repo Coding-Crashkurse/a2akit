@@ -154,6 +154,7 @@ implement their respective ABC.
 | `ctx.turn_ended` | Whether a terminal method was called |
 | `ctx.history` | Previous messages in this task (`list[HistoryMessage]`) |
 | `ctx.previous_artifacts` | Artifacts from prior turns (`list[PreviousArtifact]`) |
+| `ctx.deps` | Dependency container registered on the server (`DependencyContainer`) |
 
 ### Lifecycle
 
@@ -311,6 +312,74 @@ Hooks fire after a successful Storage write. If the write fails (e.g.
 `TaskTerminalStateError` from a concurrent cancel), the hook does not fire.
 The Storage terminal-state guard provides exactly-once delivery per task.
 
+## Dependency Injection
+
+Register shared infrastructure (DB pools, HTTP clients, config objects)
+on the server and access them in your worker via `ctx.deps`. Dependencies
+that subclass `Dependency` get automatic lifecycle management
+(startup/shutdown). Plain values are passed through as-is.
+
+```python
+from dataclasses import dataclass
+
+from a2akit import A2AServer, AgentCardConfig, Dependency, TaskContext, Worker
+
+
+class HttpClient(Dependency):
+    """Async HTTP client with lifecycle."""
+
+    def __init__(self, base_url: str) -> None:
+        self.base_url = base_url
+        self._session = None
+
+    async def startup(self) -> None:
+        self._session = ...  # open connection pool
+
+    async def shutdown(self) -> None:
+        ...  # close connection pool
+
+
+@dataclass
+class AppConfig:
+    model: str = "claude-sonnet"
+
+
+class MyWorker(Worker):
+    def __init__(self, system_prompt: str = "You are helpful.") -> None:
+        self.system_prompt = system_prompt  # constructor injection
+
+    async def handle(self, ctx: TaskContext) -> None:
+        # Shared infrastructure via DI:
+        client = ctx.deps[HttpClient]
+        config = ctx.deps[AppConfig]
+        api_key = ctx.deps.get("api_key", "fallback")
+
+        # Worker-specific via constructor:
+        prompt = self.system_prompt
+
+        await ctx.complete(f"Model: {config.model}")
+
+
+server = A2AServer(
+    worker=MyWorker(system_prompt="Analyze data."),
+    agent_card=AgentCardConfig(name="Agent", description="...", version="0.1.0"),
+    dependencies={
+        HttpClient: HttpClient(base_url="https://api.example.com"),
+        AppConfig: AppConfig(model="claude-sonnet"),
+        "api_key": "sk-...",
+    },
+)
+app = server.as_fastapi_app()
+```
+
+**Three patterns:**
+
+| Pattern | Registration | Lifecycle? | Access |
+|---|---|---|---|
+| Plain values | `{AppConfig: config}` | No | `ctx.deps[AppConfig]` |
+| Lifecycle-managed | `{DbPool: pool}` | `startup()`/`shutdown()` | `ctx.deps[DbPool]` |
+| Constructor injection | `MyWorker(prompt="...")` | No | `self.prompt` |
+
 ## Configuration
 
 a2akit reads settings from environment variables prefixed with `A2AKIT_`.
@@ -360,6 +429,11 @@ server = A2AServer(
     blocking_timeout_s=30.0,         # timeout for blocking requests
     max_concurrent_tasks=None,       # limit parallel task execution
     hooks=LifecycleHooks(...),       # optional lifecycle hooks
+    dependencies={                   # optional dependency injection
+        DatabasePool: pool,          #   type key (lifecycle-managed)
+        AppConfig: config,           #   type key (plain value)
+        "api_key": "sk-...",         #   string key (plain value)
+    },
 )
 app = server.as_fastapi_app()
 ```
@@ -389,17 +463,18 @@ Planned features for upcoming releases. Priorities may shift based on feedback.
 |---|---|
 | ~~Request middleware~~ | ~~v0.1.0~~ done |
 | ~~Lifecycle hooks~~ | ~~v0.1.0~~ done |
-| Dependency injection | v0.1.0 |
-| Documentation website | v0.1.0 |
-| Redis EventBus | v0.2.0 |
-| Redis Broker | v0.2.0 |
-| PostgreSQL Storage | v0.2.0 |
-| SQLite Storage | v0.2.0 |
-| Backend conformance test suite | v0.2.0 |
+| ~~Dependency injection~~ | ~~v0.1.0~~ done |
+| PostgreSQL Storage | v0.1.0 |
+| SQLite Storage | v0.1.0 |
+| JSON-RPC transport | v0.1.0 |
 | OpenTelemetry integration | v0.2.0 |
+| A2A Client | v0.2.0 |
+| Documentation website | v0.2.0 |
+| Backend conformance test suite | v0.2.0 |
+| Redis EventBus | v0.3.0 |
+| Redis Broker | v0.3.0 |
 | RabbitMQ Broker | v0.3.0+ |
-| JSON-RPC transport | v0.3.0+ |
-| gRPC transport | v0.4.0+ |
+| gRPC transport | future |
 
 This roadmap is subject to change.
 

@@ -37,6 +37,7 @@ from a2akit.storage.base import (
 
 if TYPE_CHECKING:
     from a2akit.broker.base import CancelScope
+    from a2akit.dependencies import DependencyContainer
     from a2akit.event_emitter import EventEmitter
 
 logger = logging.getLogger(__name__)
@@ -229,6 +230,17 @@ class TaskContext(ABC):
     def previous_artifacts(self) -> list[PreviousArtifact]:
         """Artifacts already produced by this task in previous turns."""
 
+    @property
+    @abstractmethod
+    def deps(self) -> DependencyContainer:
+        """Dependency container registered on the server.
+
+        Access by type key or string key::
+
+            db = ctx.deps[DatabasePool]
+            key = ctx.deps.get("api_key", "default")
+        """
+
     @abstractmethod
     async def complete(
         self, text: str | None = None, *, artifact_id: str = "final-answer"
@@ -365,6 +377,7 @@ class TaskContextImpl(TaskContext):
         previous_artifacts: list[PreviousArtifact] | None = None,
         initial_version: int | None = None,
         request_context: dict[str, Any] | None = None,
+        deps: DependencyContainer | None = None,
     ) -> None:
         """Initialize the task context.
 
@@ -390,6 +403,9 @@ class TaskContextImpl(TaskContext):
         self._turn_ended: bool = False
         self._version: int | None = initial_version
         self._request_context = request_context or {}
+        from a2akit.dependencies import DependencyContainer
+
+        self._deps = deps if deps is not None else DependencyContainer()
 
     def _make_agent_message(
         self, parts: list[Part], *, metadata: dict[str, Any] | None = None
@@ -468,6 +484,11 @@ class TaskContextImpl(TaskContext):
     def data_parts(self) -> list[dict[str, Any]]:
         """All structured data parts from the user message."""
         return _extract_data_parts(self.parts)
+
+    @property
+    def deps(self) -> DependencyContainer:
+        """Dependency container registered on the server."""
+        return self._deps
 
     async def complete(
         self, text: str | None = None, *, artifact_id: str = "final-answer"
