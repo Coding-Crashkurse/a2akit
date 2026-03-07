@@ -1,8 +1,8 @@
 site_name: a2akit
 site_description: A2A agent framework in one import.
-site_url: https://markuslang1987.github.io/a2akit/
-repo_url: https://github.com/markuslang1987/a2akit
-repo_name: markuslang1987/a2akit
+site_url: https://coding-crashkurse.github.io/a2akit/
+repo_url: https://github.com/Coding-Crashkurse/a2akit
+repo_name: Coding-Crashkurse/a2akit
 edit_uri: edit/main/docs/
 
 theme:
