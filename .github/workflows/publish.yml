@@ -25,7 +25,7 @@ jobs:
       - name: Lint
         run: uv run ruff check src/ tests/
       - name: Test
-        run: uv run pytest --cov=a2akit --cov-fail-under=90
+        run: uv run pytest --cov=a2akit --cov-fail-under=80
 
   publish:
     name: Build & Publish

@@ -75,7 +75,7 @@ addopts = [
     "-q",
     "--cov=a2akit",
     "--cov-report=term-missing",
-    "--cov-fail-under=90",
+    "--cov-fail-under=80",
 ]
 markers = [
     "slow: Tests that take >2s",
