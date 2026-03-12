@@ -4,26 +4,7 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
-## [0.0.7] — 2026-03-12
-
-### Added
-- **CapabilitiesConfig**: Explicit capability declaration for agents.
-  - `streaming`: Enable/disable streaming support (default: `False`).
-  - `push_notifications`: Placeholder, raises `NotImplementedError` when `True`.
-  - `extended_agent_card`: Placeholder, raises `NotImplementedError` when `True`.
-  - `extensions`: Placeholder, raises `NotImplementedError` when set.
-- Server-side enforcement: unsupported streaming operations return `UnsupportedOperationError`.
-- Client-side enforcement: `stream()`, `stream_text()`, and `subscribe()` check agent card before request.
-- **Client examples**: `client_echo.py`, `client_streaming.py`, and `client_streaming_low_level.py` showcasing easy-to-use client usage.
-
-### Changed
-- **Breaking**: Streaming is now opt-in. Agents that use streaming must add
-  `capabilities=CapabilitiesConfig(streaming=True)` to their `AgentCardConfig`.
-  Previously all agents implicitly supported streaming.
-- `AgentCardConfig` now uses a `capabilities` field (`CapabilitiesConfig`) instead of
-  separate `streaming`, `push_notifications`, and `supports_extended_card` fields.
-
-## [0.0.6] — 2026-03-11
+## [0.0.6] — 2026-03-12
 
 ### Added
 - **A2AClient**: Dev-first client for interacting with A2A agents.
@@ -39,6 +20,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 - **Client errors**: `AgentNotFoundError`, `AgentCapabilityError`, `NotConnectedError`,
   `TaskNotFoundError`, `TaskNotCancelableError`, `TaskTerminalError`, `ProtocolError`.
 - Client integration tests for both HTTP+JSON and JSON-RPC protocols.
+- **Client examples**: `client_echo.py`, `client_streaming.py`, and `client_streaming_low_level.py`.
+- **CapabilitiesConfig**: Explicit capability declaration for agents.
+  - `streaming`: Enable/disable streaming support (default: `False`).
+  - `push_notifications`: Placeholder, raises `NotImplementedError` when `True`.
+  - `extended_agent_card`: Placeholder, raises `NotImplementedError` when `True`.
+  - `extensions`: Placeholder, raises `NotImplementedError` when set.
+- Server-side enforcement: unsupported streaming operations return `UnsupportedOperationError`.
+- Client-side enforcement: `stream()`, `stream_text()`, and `subscribe()` check agent card before request.
+
+### Changed
+- **Breaking**: Streaming is now opt-in. Agents that use streaming must add
+  `capabilities=CapabilitiesConfig(streaming=True)` to their `AgentCardConfig`.
+  Previously all agents implicitly supported streaming.
+- `AgentCardConfig` now uses a `capabilities` field (`CapabilitiesConfig`) instead of
+  separate `streaming`, `push_notifications`, and `supports_extended_card` fields.
 
 ## [0.0.5] — 2026-03-10
 
