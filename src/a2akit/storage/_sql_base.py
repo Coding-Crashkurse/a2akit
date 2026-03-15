@@ -23,6 +23,7 @@ from a2akit.storage.base import (
     Storage,
     TaskNotFoundError,
     TaskTerminalStateError,
+    _build_transition_record,
 )
 
 logger = logging.getLogger(__name__)
@@ -206,6 +207,11 @@ class SQLStorageBase(Storage[ContextT]):
                 if existing is not None:
                     return existing
             else:
+                initial_meta = {
+                    "stateTransitions": [
+                        _build_transition_record(TaskState.submitted.value, now),
+                    ],
+                }
                 await session.execute(
                     tasks_table.insert().values(
                         id=task_id,
@@ -215,7 +221,7 @@ class SQLStorageBase(Storage[ContextT]):
                         status_message=None,
                         history=self._serialize_messages([history_msg]),
                         artifacts="[]",
-                        metadata_json=None,
+                        metadata_json=json.dumps(initial_meta),
                         version=1,
                         idempotency_key=None,
                         created_at=now,
@@ -281,6 +287,16 @@ class SQLStorageBase(Storage[ContextT]):
                 values["status_state"] = state.value
                 values["status_timestamp"] = datetime.now(UTC).isoformat()
                 values["status_message"] = self._serialize_message(status_message)
+                # Append state-transition record (after task_metadata merge)
+                existing_meta = json.loads(
+                    values.get("metadata_json") or row.metadata_json or "{}"
+                )
+                existing_meta.setdefault("stateTransitions", []).append(
+                    _build_transition_record(
+                        state.value, values["status_timestamp"], status_message
+                    ),
+                )
+                values["metadata_json"] = json.dumps(existing_meta)
 
             await session.execute(
                 tasks_table.update()

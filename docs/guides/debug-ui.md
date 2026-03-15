@@ -59,9 +59,10 @@ The Tasks view shows all tasks in the system with live polling.
     - Full Task ID and Context ID
     - Current state with timestamp
     - Status message
+    - **State transition timeline** — vertical timeline showing every state change with badge, timestamp, and optional message text (requires `state_transition_history` capability or always present in metadata)
     - Complete message history (user + agent messages)
     - All artifacts with text and formatted JSON
-    - Metadata (excluding internal `_`-prefixed keys)
+    - Metadata (excluding internal `_`-prefixed keys and `stateTransitions`)
 - Polling updates task states in-place without flickering (React virtual DOM).
 
 ## Protocol Support
@@ -86,6 +87,7 @@ The left sidebar (visible in both views) displays agent metadata read from `/.we
 - A2A protocol version
 - Agent URL
 - Streaming capability (checkmark or cross)
+- State History capability (checkmark or cross)
 - Input/output modes
 - Registered skills
 

@@ -5,7 +5,7 @@ export interface AgentCard {
   preferredTransport: "jsonrpc" | "http+json";
   protocolVersion?: string;
   url?: string;
-  capabilities?: { streaming?: boolean };
+  capabilities?: { streaming?: boolean; stateTransitionHistory?: boolean };
   defaultInputModes?: string[];
   defaultOutputModes?: string[];
   skills?: Array<{ id?: string; name?: string; description?: string }>;
@@ -46,6 +46,12 @@ export interface Task {
   metadata?: Record<string, unknown>;
   // direct message reply fields
   parts?: Part[];
+}
+
+export interface StateTransition {
+  state: string;
+  timestamp: string;
+  messageText?: string;
 }
 
 export interface ChatMessage {

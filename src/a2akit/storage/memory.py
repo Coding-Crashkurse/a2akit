@@ -19,6 +19,7 @@ from a2akit.storage.base import (
     Storage,
     TaskNotFoundError,
     TaskTerminalStateError,
+    _build_transition_record,
 )
 
 
@@ -133,14 +134,22 @@ class InMemoryStorage(Storage[ContextT]):
         # Copy message for history — Storage MUST NOT mutate the input.
         history_msg = message.model_copy(update={"task_id": task_id, "context_id": context_id})
 
+        now = datetime.now(UTC).isoformat()
+        initial_meta: dict[str, Any] = {}
+        if idempotency_key:
+            initial_meta["_idempotency_key"] = idempotency_key
+        initial_meta["stateTransitions"] = [
+            _build_transition_record(TaskState.submitted.value, now),
+        ]
+
         task = Task(
             id=task_id,
             context_id=context_id,
             kind="task",
-            status=TaskStatus(state=TaskState.submitted, timestamp=datetime.now(UTC).isoformat()),
+            status=TaskStatus(state=TaskState.submitted, timestamp=now),
             history=[history_msg],
             artifacts=[],
-            metadata={"_idempotency_key": idempotency_key} if idempotency_key else None,
+            metadata=initial_meta,
         )
         self.tasks[task_id] = task
         self._versions[task_id] = 1
@@ -205,10 +214,16 @@ class InMemoryStorage(Storage[ContextT]):
             task.metadata.update(task_metadata)
 
         if state is not None:
+            ts = datetime.now(UTC).isoformat()
             task.status = TaskStatus(
                 state=state,
-                timestamp=datetime.now(UTC).isoformat(),
+                timestamp=ts,
                 message=status_message,
+            )
+            if task.metadata is None:
+                task.metadata = {}
+            task.metadata.setdefault("stateTransitions", []).append(
+                _build_transition_record(state.value, ts, status_message),
             )
 
         new_version = current_version + 1

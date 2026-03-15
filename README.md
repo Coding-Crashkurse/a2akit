@@ -79,7 +79,7 @@ Open `http://localhost:8000/chat` — chat with your agent and inspect tasks in 
 - **Debug UI** — built-in browser interface for chat + task inspection (`debug=True`)
 - **One-liner setup** — `A2AServer` wires storage, broker, event bus, and endpoints
 - **A2AClient** — auto-discovers agents, supports send/stream/cancel/subscribe
-- **Capabilities** — explicit opt-in for streaming, enforced on server and client
+- **Capabilities** — explicit opt-in for streaming and state transition history, enforced on server and client
 - **Streaming** — word-by-word artifact streaming via SSE
 - **Cancellation** — cooperative and force-cancel with timeout fallback
 - **Multi-turn** — `request_input()` / `request_auth()` for conversational flows

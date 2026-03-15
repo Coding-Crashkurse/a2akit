@@ -171,7 +171,7 @@ def build_a2a_router() -> APIRouter:
     """Build and return the complete A2A API router."""
     router = APIRouter(dependencies=[Depends(_check_a2a_version)])
 
-    @router.post("/v1/message:send")
+    @router.post("/v1/message:send", tags=["Messages"])
     async def message_send(request: Request, params: MessageSendParams) -> JSONResponse:
         """Submit a message and return the task or message directly."""
         params = _validate_ids(params)
@@ -194,7 +194,7 @@ def build_a2a_router() -> APIRouter:
             content=json.loads(result.model_dump_json(by_alias=True, exclude_none=True))
         )
 
-    @router.post("/v1/message:stream", response_class=EventSourceResponse)
+    @router.post("/v1/message:stream", response_class=EventSourceResponse, tags=["Messages"])
     async def message_stream(
         setup: tuple[StreamEvent, AsyncIterator[StreamEvent]] = Depends(_stream_setup),
     ) -> AsyncIterable[ServerSentEvent]:
@@ -217,7 +217,7 @@ def build_a2a_router() -> APIRouter:
         except Exception:
             logger.exception("SSE stream aborted")
 
-    @router.get("/v1/tasks/{task_id}")
+    @router.get("/v1/tasks/{task_id}", tags=["Tasks"])
     async def tasks_get(
         request: Request,
         task_id: str = Path(),
@@ -235,7 +235,7 @@ def build_a2a_router() -> APIRouter:
             content=json.loads(t.model_dump_json(by_alias=True, exclude_none=True))
         )
 
-    @router.get("/v1/tasks")
+    @router.get("/v1/tasks", tags=["Tasks"])
     async def tasks_list(
         request: Request,
         context_id: str | None = Query(None, alias="contextId"),
@@ -263,7 +263,7 @@ def build_a2a_router() -> APIRouter:
             content=json.loads(result.model_dump_json(by_alias=True, exclude_none=True))
         )
 
-    @router.post("/v1/tasks/{task_id}:cancel")
+    @router.post("/v1/tasks/{task_id}:cancel", tags=["Tasks"])
     async def tasks_cancel(
         request: Request,
         task_id: str = Path(),
@@ -285,7 +285,9 @@ def build_a2a_router() -> APIRouter:
                 status_code=409, detail={"code": -32002, "message": "Task is not cancelable"}
             ) from err
 
-    @router.post("/v1/tasks/{task_id}:subscribe", response_class=EventSourceResponse)
+    @router.post(
+        "/v1/tasks/{task_id}:subscribe", response_class=EventSourceResponse, tags=["Tasks"]
+    )
     async def tasks_subscribe(
         setup: tuple[StreamEvent, AsyncIterator[StreamEvent]] = Depends(_subscribe_setup),
     ) -> AsyncIterable[ServerSentEvent]:
@@ -305,7 +307,7 @@ def build_a2a_router() -> APIRouter:
         except Exception:
             logger.exception("SSE subscribe stream aborted")
 
-    @router.post("/v1/tasks/{task_id}/pushNotificationConfig:set")
+    @router.post("/v1/tasks/{task_id}/pushNotificationConfig:set", tags=["Push Notifications"])
     async def push_config_set(task_id: str = Path()) -> JSONResponse:
         """Stub: push notification config set — not supported."""
         return JSONResponse(
@@ -313,7 +315,7 @@ def build_a2a_router() -> APIRouter:
             content={"code": -32003, "message": "Push notifications are not supported"},
         )
 
-    @router.get("/v1/tasks/{task_id}/pushNotificationConfig")
+    @router.get("/v1/tasks/{task_id}/pushNotificationConfig", tags=["Push Notifications"])
     async def push_config_get(task_id: str = Path()) -> JSONResponse:
         """Stub: push notification config get — not supported."""
         return JSONResponse(
@@ -321,7 +323,7 @@ def build_a2a_router() -> APIRouter:
             content={"code": -32003, "message": "Push notifications are not supported"},
         )
 
-    @router.get("/v1/tasks/{task_id}/pushNotificationConfig:list")
+    @router.get("/v1/tasks/{task_id}/pushNotificationConfig:list", tags=["Push Notifications"])
     async def push_config_list(task_id: str = Path()) -> JSONResponse:
         """Stub: push notification config list — not supported."""
         return JSONResponse(
@@ -329,7 +331,7 @@ def build_a2a_router() -> APIRouter:
             content={"code": -32003, "message": "Push notifications are not supported"},
         )
 
-    @router.delete("/v1/tasks/{task_id}/pushNotificationConfig")
+    @router.delete("/v1/tasks/{task_id}/pushNotificationConfig", tags=["Push Notifications"])
     async def push_config_delete(task_id: str = Path()) -> JSONResponse:
         """Stub: push notification config delete — not supported."""
         return JSONResponse(
@@ -337,7 +339,7 @@ def build_a2a_router() -> APIRouter:
             content={"code": -32003, "message": "Push notifications are not supported"},
         )
 
-    @router.get("/v1/health")
+    @router.get("/v1/health", tags=["Health"])
     async def health_check() -> dict[str, str]:
         """Return a simple health status."""
         return {"status": "ok"}
@@ -350,7 +352,7 @@ def build_discovery_router(card_config: AgentCardConfig) -> APIRouter:
 
     router = APIRouter()
 
-    @router.get("/.well-known/agent-card.json")
+    @router.get("/.well-known/agent-card.json", tags=["Discovery"])
     async def get_agent_card(request: Request) -> JSONResponse:
         """Serve the agent discovery card with the correct base URL."""
         base_url = external_base_url(

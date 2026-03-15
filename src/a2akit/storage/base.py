@@ -92,6 +92,22 @@ class ArtifactWrite:
     append: bool = False
 
 
+def _build_transition_record(
+    state: str,
+    timestamp: str,
+    status_message: Message | None = None,
+) -> dict[str, str]:
+    """Build a state-transition record for ``metadata["stateTransitions"]``."""
+    record: dict[str, str] = {"state": state, "timestamp": timestamp}
+    if status_message:
+        for part in status_message.parts or []:
+            root = getattr(part, "root", part)
+            if hasattr(root, "text") and root.text:
+                record["messageText"] = root.text
+                break
+    return record
+
+
 class Storage(ABC, Generic[ContextT]):
     """Abstract storage interface for A2A tasks.
 

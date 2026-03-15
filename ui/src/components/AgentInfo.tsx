@@ -33,6 +33,7 @@ export function AgentInfo({
 
   const proto = card.preferredTransport === "jsonrpc" ? "JSON-RPC" : "HTTP+JSON";
   const streaming = card.capabilities?.streaming;
+  const stateHistory = card.capabilities?.stateTransitionHistory;
   const inputModes = card.defaultInputModes || [];
   const outputModes = card.defaultOutputModes || [];
   const skills = card.skills || [];
@@ -51,6 +52,16 @@ export function AgentInfo({
           <span className="info-label">Streaming</span>
           <span className="info-value">
             {streaming ? (
+              <span className="check">{"\u2713"}</span>
+            ) : (
+              <span className="cross">{"\u2717"}</span>
+            )}
+          </span>
+        </div>
+        <div className="info-row">
+          <span className="info-label">State History</span>
+          <span className="info-value">
+            {stateHistory ? (
               <span className="check">{"\u2713"}</span>
             ) : (
               <span className="cross">{"\u2717"}</span>

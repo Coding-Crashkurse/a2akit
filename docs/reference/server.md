@@ -102,6 +102,7 @@ caps = CapabilitiesConfig(streaming=True)
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `streaming` | `bool` | `False` | Enable SSE streaming (`message:stream`, `tasks:subscribe`) |
+| `state_transition_history` | `bool` | `False` | Advertise state transition history in Agent Card (transitions are always recorded) |
 | `push_notifications` | `bool` | `False` | Push notifications (not yet implemented, raises `NotImplementedError`) |
 | `extended_agent_card` | `bool` | `False` | Extended agent card (not yet implemented, raises `NotImplementedError`) |
 | `extensions` | `list[AgentExtension] \| None` | `None` | Protocol extensions (not yet implemented, raises `NotImplementedError`) |

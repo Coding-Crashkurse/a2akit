@@ -20,6 +20,7 @@ from typing import Any
 from a2a.types import Message, Task, TaskState
 
 from a2akit.storage._sql_base import SQLStorageBase, metadata_obj
+from a2akit.storage.base import _build_transition_record
 
 
 class SQLiteStorage(SQLStorageBase[Any]):
@@ -75,7 +76,12 @@ class SQLiteStorage(SQLStorageBase[Any]):
     ) -> Task | None:
         now = datetime.now(UTC).isoformat()
         history = self._serialize_messages([message])
-        metadata_json = json.dumps({"_idempotency_key": idempotency_key})
+        metadata_json = json.dumps(
+            {
+                "_idempotency_key": idempotency_key,
+                "stateTransitions": [_build_transition_record(TaskState.submitted.value, now)],
+            }
+        )
 
         await session.execute(
             text(

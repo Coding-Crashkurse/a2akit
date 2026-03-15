@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { AgentCard, Task } from "../lib/types";
+import type { AgentCard, StateTransition, Task } from "../lib/types";
 import { extractPartsText, fetchTaskById, fetchTaskList } from "../lib/protocol";
 import { StateBadge } from "./StateBadge";
 import { PartsDisplay } from "./PartsDisplay";
@@ -205,12 +205,14 @@ function TaskDetail({ task }: { task: Task }) {
   const ts = task.status?.timestamp || "";
   const history = task.history || [];
   const artifacts = task.artifacts || [];
+  const transitions: StateTransition[] =
+    (task.metadata?.stateTransitions as StateTransition[] | undefined) || [];
 
   const filteredMeta: Record<string, unknown> = {};
   let hasMeta = false;
   if (task.metadata) {
     for (const [key, val] of Object.entries(task.metadata)) {
-      if (!key.startsWith("_")) {
+      if (!key.startsWith("_") && key !== "stateTransitions") {
         filteredMeta[key] = val;
         hasMeta = true;
       }
@@ -246,6 +248,29 @@ function TaskDetail({ task }: { task: Task }) {
           </div>
         )}
       </div>
+
+      {transitions.length > 0 && (
+        <div className="task-detail-section">
+          <h3>State Transitions</h3>
+          <div className="transitions-timeline">
+            {transitions.map((tr, i) => (
+              <div key={i} className="transition-item">
+                <div className="transition-dot-col">
+                  <span className="transition-dot" />
+                  {i < transitions.length - 1 && <span className="transition-line" />}
+                </div>
+                <div className="transition-content">
+                  <StateBadge state={tr.state} />
+                  <span className="transition-ts">{formatTimestamp(tr.timestamp)}</span>
+                  {tr.messageText && (
+                    <span className="transition-msg">{tr.messageText}</span>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {history.length > 0 && (
         <div className="task-detail-section">

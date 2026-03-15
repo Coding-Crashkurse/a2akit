@@ -42,6 +42,7 @@ class CapabilitiesConfig(BaseModel):
 
     streaming: bool = False
     push_notifications: bool = False
+    state_transition_history: bool = False
     extended_agent_card: bool = False
     extensions: list[AgentExtension] | None = None
 
@@ -133,7 +134,7 @@ def build_agent_card(config: AgentCardConfig, base_url: str) -> AgentCard:
             extensions=[_to_agent_extension(e) for e in config.extensions] or None,
             streaming=caps.streaming,
             push_notifications=caps.push_notifications,
-            state_transition_history=False,
+            state_transition_history=caps.state_transition_history,
         ),
         default_input_modes=config.input_modes,
         default_output_modes=config.output_modes,

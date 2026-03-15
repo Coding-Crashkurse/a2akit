@@ -4,6 +4,24 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.0.9] — 2026-03-15
+
+### Added
+- **State Transition History** — every task now records a chronological list of all
+  state transitions in `task.metadata["stateTransitions"]`.
+  - Each entry contains `state`, `timestamp`, and an optional `messageText` (extracted
+    from the status message's first `TextPart`).
+  - Transitions are always recorded regardless of the capability setting; the
+    `state_transition_history` flag on `CapabilitiesConfig` only controls whether
+    `capabilities.stateTransitionHistory` is advertised in the Agent Card.
+  - `CapabilitiesConfig(state_transition_history=True)` to opt-in.
+  - Works across all storage backends (InMemory, SQLite, PostgreSQL).
+- **Debug UI: State Transitions Timeline** — the Task Dashboard detail view now shows
+  a vertical timeline of all state transitions with state badges, timestamps, and
+  optional message text.
+- **Debug UI: Agent Info** — the sidebar now displays the `State History` capability
+  (checkmark or cross).
+
 ## [0.0.8] — 2026-03-15
 
 ### Added

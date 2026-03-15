@@ -141,6 +141,16 @@ a:hover{text-decoration:underline}
 .artifact-text{white-space:pre-wrap;word-break:break-word}
 pre.json-block{background:var(--bg);padding:10px;border-radius:6px;font-family:var(--mono);font-size:11px;overflow-x:auto;white-space:pre-wrap;word-break:break-word;margin:4px 0;border:1px solid var(--border)}
 .metadata-block{background:var(--bg);padding:10px;border-radius:6px;font-family:var(--mono);font-size:11px;white-space:pre-wrap;word-break:break-word;border:1px solid var(--border)}
+/* State transitions timeline */
+.transitions-timeline{display:flex;flex-direction:column;gap:0;margin:4px 0 0 2px}
+.transition-item{display:flex;gap:10px;min-height:28px}
+.transition-dot-col{display:flex;flex-direction:column;align-items:center;width:12px;flex-shrink:0}
+.transition-dot{width:8px;height:8px;border-radius:50%;background:var(--accent);flex-shrink:0;margin-top:4px}
+.transition-line{width:1px;flex:1;background:var(--border-light);min-height:12px}
+.transition-content{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding-bottom:6px}
+.transition-ts{font-family:var(--mono);font-size:10px;color:var(--text-dim)}
+.transition-msg{font-size:11px;color:var(--text);font-style:italic;max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
 .task-error{padding:14px;background:var(--error-bg);border:1px solid rgba(240,104,104,0.2);border-radius:var(--radius);color:var(--error);font-size:13px}
 
 /* Scrollbar styling */
