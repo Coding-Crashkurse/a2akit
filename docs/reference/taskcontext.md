@@ -19,6 +19,7 @@
         - history
         - previous_artifacts
         - deps
+        - accepts
         - complete
         - complete_json
         - fail
@@ -79,6 +80,21 @@
 | Property | Type | Description |
 |----------|------|-------------|
 | `deps` | `DependencyContainer` | Dependency container from the server |
+
+## Output Negotiation
+
+### `accepts(mime_type) -> bool`
+
+Check whether the client accepts the given output MIME type. Returns `True` if the type is in `acceptedOutputModes`, or if no filter was specified (absent or empty means "accept everything"). Case-sensitive per RFC 2045.
+
+```python
+if ctx.accepts("application/json"):
+    await ctx.complete_json({"revenue": 42000})
+elif ctx.accepts("text/csv"):
+    await ctx.complete(to_csv(data))
+else:
+    await ctx.complete("Revenue: 42,000 €")
+```
 
 ## Lifecycle Methods
 

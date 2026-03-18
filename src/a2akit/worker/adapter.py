@@ -253,6 +253,7 @@ class WorkerAdapter:
                     cancel_event,
                     is_new_task=is_new_task,
                     request_context=request_context,
+                    configuration=getattr(params, "configuration", None),
                 )
 
                 try:

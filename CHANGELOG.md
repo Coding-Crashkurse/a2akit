@@ -4,6 +4,20 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.0.11] — 2026-03-18
+
+### Added
+- **`ctx.accepts(mime_type)` — output mode negotiation** (A2A §7.1.2).
+  - Workers can now check which output MIME types the client supports via
+    `ctx.accepts("application/json")`, `ctx.accepts("text/csv")`, etc.
+  - Returns `True` when the client listed the type in `acceptedOutputModes`,
+    or when no filter was specified (absent or empty = accept everything).
+  - Case-sensitive comparison per RFC 2045.
+  - Threaded from `MessageSendConfiguration.acceptedOutputModes` through
+    `ContextFactory` → `TaskContextImpl`.
+  - `examples/output_negotiation.py` — reference example with JSON/CSV/text fallback.
+  - Unit and integration tests.
+
 ## [0.0.10] — 2026-03-16
 
 ### Added

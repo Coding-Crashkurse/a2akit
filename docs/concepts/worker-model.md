@@ -56,6 +56,12 @@ Your `handle()` method **MUST** call exactly one lifecycle method before returni
 | `ctx.previous_artifacts` | `list[PreviousArtifact]` | Artifacts from prior turns |
 | `ctx.deps` | `DependencyContainer` | Dependency container from the server |
 
+### Output Negotiation
+
+| Method | Description |
+|--------|-------------|
+| `ctx.accepts(mime_type)` | Check if client accepts the given MIME type (`True` when listed or no filter) |
+
 ### Streaming Methods
 
 | Method | Description |

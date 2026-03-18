@@ -14,6 +14,8 @@ from a2akit.worker.base import (
 )
 
 if TYPE_CHECKING:
+    from a2a.types import MessageSendConfiguration
+
     from a2akit.broker.base import CancelScope
     from a2akit.dependencies import DependencyContainer
     from a2akit.event_emitter import EventEmitter
@@ -41,6 +43,7 @@ class ContextFactory:
         *,
         is_new_task: bool = False,
         request_context: dict[str, Any] | None = None,
+        configuration: MessageSendConfiguration | None = None,
     ) -> TaskContextImpl:
         """Construct a TaskContextImpl from a broker message."""
         user_text = self._extract_text(message.parts)
@@ -53,6 +56,10 @@ class ContextFactory:
             if task:
                 history = self._convert_history(task.history or [], message.message_id or "")
                 previous_artifacts = self._convert_artifacts(task.artifacts or [])
+
+        accepted: list[str] | None = None
+        if configuration and configuration.accepted_output_modes:
+            accepted = list(configuration.accepted_output_modes)
 
         # initial_version starts as None; WorkerAdapter seeds ctx._version
         # from the working-state transition's return value before calling
@@ -71,6 +78,7 @@ class ContextFactory:
             previous_artifacts=previous_artifacts,
             request_context=request_context,
             deps=self._deps,
+            accepted_output_modes=accepted,
         )
 
     @staticmethod

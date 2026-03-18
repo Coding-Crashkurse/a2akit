@@ -242,6 +242,38 @@ class TaskContext(ABC):
         """
 
     @abstractmethod
+    def accepts(self, mime_type: str) -> bool:
+        """Check whether the client accepts the given output MIME type.
+
+        Returns ``True`` if the client listed this type in
+        ``acceptedOutputModes``, or if no filter was specified
+        (absent or empty means the client accepts everything).
+
+        Common MIME types::
+
+            ctx.accepts("text/plain")
+            ctx.accepts("application/json")
+            ctx.accepts("text/html")
+            ctx.accepts("text/csv")
+            ctx.accepts("text/markdown")
+            ctx.accepts("application/pdf")
+            ctx.accepts("image/png")
+            ctx.accepts("image/jpeg")
+            ctx.accepts("audio/mpeg")
+            ctx.accepts("video/mp4")
+            ctx.accepts("application/xml")
+            ctx.accepts("application/octet-stream")
+
+        Example::
+
+            async def handle(self, ctx: TaskContext) -> None:
+                if ctx.accepts("application/json"):
+                    await ctx.complete_json({"revenue": 42000})
+                else:
+                    await ctx.complete("Revenue: 42,000 €")
+        """
+
+    @abstractmethod
     async def complete(
         self, text: str | None = None, *, artifact_id: str = "final-answer"
     ) -> None:
@@ -378,6 +410,7 @@ class TaskContextImpl(TaskContext):
         initial_version: int | None = None,
         request_context: dict[str, Any] | None = None,
         deps: DependencyContainer | None = None,
+        accepted_output_modes: list[str] | None = None,
     ) -> None:
         """Initialize the task context.
 
@@ -406,6 +439,7 @@ class TaskContextImpl(TaskContext):
         from a2akit.dependencies import DependencyContainer
 
         self._deps = deps if deps is not None else DependencyContainer()
+        self._accepted_output_modes = accepted_output_modes
 
     def _make_agent_message(
         self, parts: list[Part], *, metadata: dict[str, Any] | None = None
@@ -489,6 +523,12 @@ class TaskContextImpl(TaskContext):
     def deps(self) -> DependencyContainer:
         """Dependency container registered on the server."""
         return self._deps
+
+    def accepts(self, mime_type: str) -> bool:
+        """Check whether the client accepts the given output MIME type."""
+        if not self._accepted_output_modes:
+            return True
+        return mime_type in self._accepted_output_modes
 
     async def complete(
         self, text: str | None = None, *, artifact_id: str = "final-answer"
