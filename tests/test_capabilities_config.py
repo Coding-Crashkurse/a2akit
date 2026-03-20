@@ -35,8 +35,10 @@ def test_extended_agent_card_raises():
         CapabilitiesConfig(extended_agent_card=True)
 
 
-def test_extensions_raises():
-    """extensions=[...] raises NotImplementedError."""
+def test_extensions_accepted():
+    """extensions=[...] is accepted without error."""
     ext = AgentExtension(uri="urn:example:ext")
-    with pytest.raises(NotImplementedError, match="extensions"):
-        CapabilitiesConfig(extensions=[ext])
+    caps = CapabilitiesConfig(extensions=[ext])
+    assert caps.extensions is not None
+    assert len(caps.extensions) == 1
+    assert caps.extensions[0].uri == "urn:example:ext"

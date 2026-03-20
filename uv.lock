@@ -24,7 +24,7 @@ wheels = [
 
 [[package]]
 name = "a2akit"
-version = "0.0.12"
+version = "0.0.13"
 source = { editable = "." }
 dependencies = [
     { name = "a2a-sdk" },

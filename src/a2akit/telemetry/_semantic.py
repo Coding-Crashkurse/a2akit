@@ -3,7 +3,7 @@
 # Tracer / Meter identity
 TRACER_NAME = "a2akit"
 METER_NAME = "a2akit"
-TRACER_VERSION = "0.0.7"
+TRACER_VERSION = "0.0.13"
 
 # --- Span Names ---
 SPAN_TASK_PROCESS = "a2akit.task.process"

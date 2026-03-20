@@ -52,18 +52,31 @@ class SkillConfig(BaseModel):
 
 
 class ExtensionConfig(BaseModel):
-    """User-friendly extension definition without A2A protocol imports."""
+    """User-friendly extension definition without A2A protocol imports.
+
+    Example::
+
+        ExtensionConfig(
+            uri="urn:example:custom-logging",
+            description="Custom structured logging extension",
+            required=True,
+            params={"log_level": "debug"},
+        )
+    """
 
     uri: str
     description: str | None = None
+    required: bool = False
     params: dict[str, Any] = Field(default_factory=dict)
 
 
 class CapabilitiesConfig(BaseModel):
     """Declares which A2A protocol features this agent supports.
 
-    All capabilities default to False (opt-in). Features not yet
-    implemented by a2akit raise NotImplementedError when set to True.
+    All capabilities default to False (opt-in). Supported features:
+    streaming, push_notifications, state_transition_history, extensions.
+    Features not yet implemented (extended_agent_card) raise
+    NotImplementedError when set to True.
     """
 
     streaming: bool = False
@@ -76,7 +89,6 @@ class CapabilitiesConfig(BaseModel):
     def _check_not_yet_supported(self) -> CapabilitiesConfig:
         unsupported = {
             "extended_agent_card": self.extended_agent_card,
-            "extensions": bool(self.extensions),
         }
         for name, enabled in unsupported.items():
             if enabled:
@@ -133,6 +145,7 @@ def _to_agent_extension(ext: ExtensionConfig) -> AgentExtension:
     return AgentExtension(
         uri=ext.uri,
         description=ext.description,
+        required=ext.required or None,  # omit False from serialization
         params=ext.params or None,
     )
 
