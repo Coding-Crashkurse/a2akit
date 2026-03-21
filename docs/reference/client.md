@@ -135,6 +135,20 @@ List all push configs for a task.
 
 Delete a push notification config.
 
+### `get_extended_card() -> AgentCard`
+
+Fetch the authenticated extended agent card. Returns a full `AgentCard` with potentially richer information (e.g., premium skills) based on the caller's authentication.
+
+```python
+extended = await client.get_extended_card()
+print(f"Extended skills: {len(extended.skills)}")
+for skill in extended.skills:
+    print(f"  - {skill.name}")
+```
+
+!!! note "Requires `supportsAuthenticatedExtendedCard`"
+    Returns 404 (REST) or error code `-32007` (JSON-RPC) if the agent has not configured an `extended_card_provider`.
+
 ## Properties
 
 | Property | Type | Description |

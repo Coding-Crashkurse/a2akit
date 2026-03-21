@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
-    from a2a.types import Message, MessageSendParams, Task
+    from a2a.types import AgentCard, Message, MessageSendParams, Task
 
     from a2akit.client.result import StreamEvent
 
@@ -47,6 +47,9 @@ class Transport(ABC):
 
     @abstractmethod
     async def delete_push_config(self, task_id: str, config_id: str) -> None: ...
+
+    @abstractmethod
+    async def get_extended_card(self) -> AgentCard: ...
 
     @abstractmethod
     async def close(self) -> None: ...

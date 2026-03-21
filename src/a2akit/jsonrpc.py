@@ -45,6 +45,7 @@ PUSH_NOT_SUPPORTED = -32003
 UNSUPPORTED_OPERATION = -32004
 CONTENT_TYPE_NOT_SUPPORTED = -32005
 INVALID_AGENT_RESPONSE = -32006
+AUTHENTICATED_EXTENDED_CARD_NOT_CONFIGURED = -32007
 
 
 def _error_response(req_id: Any, code: int, message: str, data: Any = None) -> JSONResponse:
@@ -144,6 +145,7 @@ def build_jsonrpc_router() -> APIRouter:
             "tasks/pushNotificationConfig/get": _handle_push_get,
             "tasks/pushNotificationConfig/list": _handle_push_list,
             "tasks/pushNotificationConfig/delete": _handle_push_delete,
+            "agent/getAuthenticatedExtendedCard": _handle_get_extended_card,
             "health": _handle_health,
         }
 
@@ -454,3 +456,32 @@ async def _handle_push_delete(
         return _result_response(req_id, None)
     except Exception as exc:
         return _map_exception_to_error(req_id, exc)
+
+
+async def _handle_get_extended_card(
+    request: Request, req_id: Any, params: dict[str, Any]
+) -> JSONResponse:
+    """Handle agent/getAuthenticatedExtendedCard."""
+    provider = getattr(request.app.state, "extended_card_provider", None)
+    if provider is None:
+        return _error_response(
+            req_id,
+            AUTHENTICATED_EXTENDED_CARD_NOT_CONFIGURED,
+            "Authenticated Extended Card not configured",
+        )
+    try:
+        from a2akit.agent_card import AgentCardConfig, build_agent_card, external_base_url
+
+        extended_config: AgentCardConfig = await provider(request)
+        base_url = external_base_url(
+            dict(request.headers),
+            request.url.scheme,
+            request.url.netloc,
+        )
+        card = build_agent_card(extended_config, base_url)
+        return _result_response(
+            req_id,
+            json.loads(card.model_dump_json(by_alias=True, exclude_none=True)),
+        )
+    except Exception as exc:
+        return _error_response(req_id, INTERNAL_ERROR, str(exc))

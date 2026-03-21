@@ -36,7 +36,7 @@ from a2akit.task_manager import TaskManager
 from a2akit.worker import Worker, WorkerAdapter
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncIterator, Awaitable, Callable
 
     from a2akit.agent_card import AgentCardConfig
     from a2akit.middleware import A2AMiddleware
@@ -72,6 +72,7 @@ class A2AServer:
         push_allow_http: bool | None = None,
         push_allowed_hosts: set[str] | None = None,
         push_blocked_hosts: set[str] | None = None,
+        extended_card_provider: Callable[[Request], Awaitable[AgentCardConfig]] | None = None,
     ) -> None:
         """Store configuration for lazy initialization at startup."""
         validate_protocol(agent_card.protocol)
@@ -115,6 +116,9 @@ class A2AServer:
         )
         self._push_allowed_hosts = push_allowed_hosts
         self._push_blocked_hosts = push_blocked_hosts
+        self._extended_card_provider = extended_card_provider
+        if extended_card_provider is not None:
+            self._card_config.supports_authenticated_extended_card = True
 
     def _is_telemetry_enabled(self) -> bool:
         """Determine if OTel instrumentation should be active."""
@@ -247,6 +251,7 @@ class A2AServer:
                 middlewares.insert(0, TracingMiddleware())
             app.state.middlewares = middlewares
             app.state.capabilities = server._card_config.capabilities
+            app.state.extended_card_provider = server._extended_card_provider
 
             await server._deps.startup()
             async with storage, broker, event_bus, adapter.run():
@@ -262,6 +267,7 @@ class A2AServer:
                     del app.state.push_store
                     del app.state.middlewares
                     del app.state.capabilities
+                    del app.state.extended_card_provider
                     await server._deps.shutdown()
 
         fastapi_kwargs.setdefault("title", self._card_config.name)

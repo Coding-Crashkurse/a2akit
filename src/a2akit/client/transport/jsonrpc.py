@@ -7,7 +7,7 @@ import uuid
 from typing import TYPE_CHECKING, Any
 
 import httpx
-from a2a.types import Message, MessageSendParams, Task
+from a2a.types import AgentCard, Message, MessageSendParams, Task
 
 from a2akit.client.errors import (
     A2AClientError,
@@ -190,6 +190,11 @@ class JsonRpcTransport(Transport):
             {"id": task_id, "pushNotificationConfigId": config_id},
             task_id=task_id,
         )
+
+    async def get_extended_card(self) -> AgentCard:
+        """JSON-RPC agent/getAuthenticatedExtendedCard."""
+        result = await self._call("agent/getAuthenticatedExtendedCard")
+        return AgentCard.model_validate(result)
 
     async def close(self) -> None:
         """No-op; HTTP client lifecycle is managed externally."""

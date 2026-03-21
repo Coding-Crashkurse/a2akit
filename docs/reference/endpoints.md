@@ -12,6 +12,7 @@ a2akit serves all A2A protocol endpoints plus agent discovery and health checks.
 | GET | `/v1/tasks` | List tasks with filters and pagination |
 | POST | `/v1/tasks/{task_id}:cancel` | Cancel a task |
 | POST | `/v1/tasks/{task_id}:subscribe` | Subscribe to task updates via SSE |
+| GET | `/v1/card` | Authenticated extended agent card |
 | GET | `/v1/health` | Health check |
 | GET | `/.well-known/agent-card.json` | Agent discovery card |
 
@@ -157,7 +158,7 @@ Simple health check endpoint.
 !!! note "Requires `push_notifications` capability"
     These endpoints return `501` with error code `-32003` if the agent has not enabled `CapabilitiesConfig(push_notifications=True)`.
 
-### POST `/v1/tasks/{task_id}/pushNotificationConfig:set`
+### POST `/v1/tasks/{task_id}/pushNotificationConfigs`
 
 Create or update a push notification config for a task.
 
@@ -188,23 +189,37 @@ Create or update a push notification config for a task.
 }
 ```
 
-### GET `/v1/tasks/{task_id}/pushNotificationConfig/{config_id}`
+### GET `/v1/tasks/{task_id}/pushNotificationConfigs/{config_id}`
 
 Get a specific push notification config.
 
 **Response:** `TaskPushNotificationConfig` or 404.
 
-### GET `/v1/tasks/{task_id}/pushNotificationConfig:list`
+### GET `/v1/tasks/{task_id}/pushNotificationConfigs`
 
 List all push notification configs for a task.
 
 **Response:** `TaskPushNotificationConfig[]`
 
-### DELETE `/v1/tasks/{task_id}/pushNotificationConfig/{config_id}`
+### DELETE `/v1/tasks/{task_id}/pushNotificationConfigs/{config_id}`
 
 Delete a push notification config.
 
 **Response:** `204 No Content` or 404.
+
+## GET `/v1/card`
+
+!!! note "Requires `extended_card_provider`"
+    Returns `404` with error code `-32007` if the agent has not configured an `extended_card_provider` on `A2AServer`.
+
+Returns the authenticated extended agent card. The provider callback receives the full `Request` object, so it can inspect `Authorization` headers or other credentials to tailor the returned card (e.g., expose premium skills to authenticated callers).
+
+**Response:** Full `AgentCard` JSON (same schema as `/.well-known/agent-card.json`).
+
+| Status | Description |
+|--------|-------------|
+| 200 | Extended card returned |
+| 404 | Extended card provider not configured (error code `-32007`) |
 
 ## GET `/.well-known/agent-card.json`
 
@@ -237,5 +252,6 @@ curl -H "A2A-Version: 0.3.0" http://localhost:8000/v1/message:send ...
 | 409 | -32002 | Task not cancelable |
 | 409 | -32004 | Task in terminal state |
 | 422 | -32602 | Task not accepting messages |
+| 404 | -32007 | Authenticated extended card not configured |
 | 501 | -32003 | Push notifications not supported |
 | 503 | — | TaskManager not initialized |

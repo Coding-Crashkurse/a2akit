@@ -78,24 +78,24 @@ async def no_push_client(no_push_app):
 
 async def test_set_config_returns_501_when_disabled(no_push_client):
     resp = await no_push_client.post(
-        "/v1/tasks/task-1/pushNotificationConfig:set",
+        "/v1/tasks/task-1/pushNotificationConfigs",
         json={"url": "https://example.com/webhook"},
     )
     assert resp.status_code == 501
 
 
 async def test_get_config_returns_501_when_disabled(no_push_client):
-    resp = await no_push_client.get("/v1/tasks/task-1/pushNotificationConfig")
+    resp = await no_push_client.get("/v1/tasks/task-1/pushNotificationConfigs/cfg-1")
     assert resp.status_code == 501
 
 
 async def test_list_configs_returns_501_when_disabled(no_push_client):
-    resp = await no_push_client.get("/v1/tasks/task-1/pushNotificationConfig:list")
+    resp = await no_push_client.get("/v1/tasks/task-1/pushNotificationConfigs")
     assert resp.status_code == 501
 
 
 async def test_delete_config_returns_501_when_disabled(no_push_client):
-    resp = await no_push_client.delete("/v1/tasks/task-1/pushNotificationConfig/cfg-1")
+    resp = await no_push_client.delete("/v1/tasks/task-1/pushNotificationConfigs/cfg-1")
     assert resp.status_code == 501
 
 
@@ -110,7 +110,7 @@ async def test_set_config_creates_config(push_client):
 
     # Set push config
     resp = await push_client.post(
-        f"/v1/tasks/{task_id}/pushNotificationConfig:set",
+        f"/v1/tasks/{task_id}/pushNotificationConfigs",
         json={"url": "https://example.com/webhook", "token": "secret"},
     )
     assert resp.status_code == 200
@@ -126,7 +126,7 @@ async def test_set_config_auto_generates_id(push_client):
     task_id = resp.json()["id"]
 
     resp = await push_client.post(
-        f"/v1/tasks/{task_id}/pushNotificationConfig:set",
+        f"/v1/tasks/{task_id}/pushNotificationConfigs",
         json={"url": "https://example.com/webhook"},
     )
     assert resp.status_code == 200
@@ -141,13 +141,13 @@ async def test_get_config_returns_stored(push_client):
 
     # Set config with explicit ID
     resp = await push_client.post(
-        f"/v1/tasks/{task_id}/pushNotificationConfig:set",
+        f"/v1/tasks/{task_id}/pushNotificationConfigs",
         json={"id": "my-cfg", "url": "https://example.com/webhook"},
     )
     assert resp.status_code == 200
 
     # Get by ID
-    resp = await push_client.get(f"/v1/tasks/{task_id}/pushNotificationConfig/my-cfg")
+    resp = await push_client.get(f"/v1/tasks/{task_id}/pushNotificationConfigs/my-cfg")
     assert resp.status_code == 200
     assert resp.json()["pushNotificationConfig"]["id"] == "my-cfg"
 
@@ -158,15 +158,15 @@ async def test_list_configs_returns_all(push_client):
 
     # Add two configs
     await push_client.post(
-        f"/v1/tasks/{task_id}/pushNotificationConfig:set",
+        f"/v1/tasks/{task_id}/pushNotificationConfigs",
         json={"id": "cfg-a", "url": "https://a.com"},
     )
     await push_client.post(
-        f"/v1/tasks/{task_id}/pushNotificationConfig:set",
+        f"/v1/tasks/{task_id}/pushNotificationConfigs",
         json={"id": "cfg-b", "url": "https://b.com"},
     )
 
-    resp = await push_client.get(f"/v1/tasks/{task_id}/pushNotificationConfig:list")
+    resp = await push_client.get(f"/v1/tasks/{task_id}/pushNotificationConfigs")
     assert resp.status_code == 200
     configs = resp.json()
     assert len(configs) == 2
@@ -177,15 +177,15 @@ async def test_delete_config_removes(push_client):
     task_id = resp.json()["id"]
 
     await push_client.post(
-        f"/v1/tasks/{task_id}/pushNotificationConfig:set",
+        f"/v1/tasks/{task_id}/pushNotificationConfigs",
         json={"id": "cfg-1", "url": "https://example.com"},
     )
 
-    resp = await push_client.delete(f"/v1/tasks/{task_id}/pushNotificationConfig/cfg-1")
+    resp = await push_client.delete(f"/v1/tasks/{task_id}/pushNotificationConfigs/cfg-1")
     assert resp.status_code == 204
 
     # Verify it's gone
-    resp = await push_client.get(f"/v1/tasks/{task_id}/pushNotificationConfig:list")
+    resp = await push_client.get(f"/v1/tasks/{task_id}/pushNotificationConfigs")
     assert resp.json() == []
 
 
@@ -194,7 +194,7 @@ async def test_delete_config_removes(push_client):
 
 async def test_set_config_task_not_found(push_client):
     resp = await push_client.post(
-        "/v1/tasks/nonexistent/pushNotificationConfig:set",
+        "/v1/tasks/nonexistent/pushNotificationConfigs",
         json={"url": "https://example.com/webhook"},
     )
     assert resp.status_code == 404
@@ -204,7 +204,7 @@ async def test_get_config_not_found(push_client):
     resp = await push_client.post("/v1/message:send", json=_send_body())
     task_id = resp.json()["id"]
 
-    resp = await push_client.get(f"/v1/tasks/{task_id}/pushNotificationConfig/nonexistent")
+    resp = await push_client.get(f"/v1/tasks/{task_id}/pushNotificationConfigs/nonexistent")
     assert resp.status_code == 404
 
 
@@ -212,7 +212,7 @@ async def test_delete_config_not_found(push_client):
     resp = await push_client.post("/v1/message:send", json=_send_body())
     task_id = resp.json()["id"]
 
-    resp = await push_client.delete(f"/v1/tasks/{task_id}/pushNotificationConfig/nonexistent")
+    resp = await push_client.delete(f"/v1/tasks/{task_id}/pushNotificationConfigs/nonexistent")
     assert resp.status_code == 404
 
 

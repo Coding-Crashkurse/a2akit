@@ -94,6 +94,7 @@ nav:
     - Cancellation: guides/cancellation.md
     - Multi-Turn Conversations: guides/multi-turn.md
     - Push Notifications: guides/push-notifications.md
+    - Authenticated Extended Card: guides/authenticated-card.md
     - LangGraph Integration: guides/langgraph.md
   - API Reference:
     - TaskContext: reference/taskcontext.md
@@ -112,4 +113,5 @@ nav:
     - Middleware: examples/middleware-secret.md
     - Hook Printer: examples/hook-printer.md
     - Push Notifications: examples/push-notifications.md
+    - Authenticated Card: examples/authenticated-card.md
     - LangGraph Worker: examples/langgraph-worker.md

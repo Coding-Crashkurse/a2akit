@@ -56,6 +56,7 @@ server = A2AServer(
 | `push_allow_http` | `bool \| None` | `None` | Allow HTTP webhook URLs (dev only) |
 | `push_allowed_hosts` | `set[str] \| None` | `None` | Hostname allowlist for webhooks |
 | `push_blocked_hosts` | `set[str] \| None` | `None` | Hostname blocklist for webhooks |
+| `extended_card_provider` | `Callable[[Request], Awaitable[AgentCardConfig]] \| None` | `None` | Callback that returns a richer card for authenticated callers. When set, `supportsAuthenticatedExtendedCard` is automatically `True` |
 
 ### Storage Backend Resolution
 
@@ -101,6 +102,7 @@ User-friendly configuration for the agent discovery card.
 | `icon_url` | `str \| None` | `None` | URL to agent icon |
 | `documentation_url` | `str \| None` | `None` | URL to agent documentation |
 | `signatures` | `list[SignatureConfig] \| None` | `None` | JWS signatures (externally generated) |
+| `supports_authenticated_extended_card` | `bool` | `False` | Advertise support for authenticated extended card (auto-set when `extended_card_provider` is passed to `A2AServer`) |
 
 ## CapabilitiesConfig
 
@@ -117,8 +119,8 @@ caps = CapabilitiesConfig(streaming=True)
 | `streaming` | `bool` | `False` | Enable SSE streaming (`message:stream`, `tasks:subscribe`) |
 | `state_transition_history` | `bool` | `False` | Advertise state transition history in Agent Card (transitions are always recorded) |
 | `push_notifications` | `bool` | `False` | Enable push notification config CRUD and webhook delivery |
-| `extended_agent_card` | `bool` | `False` | Extended agent card (not yet implemented, raises `NotImplementedError`) |
-| `extensions` | `list[AgentExtension] \| None` | `None` | Protocol extensions (not yet implemented, raises `NotImplementedError`) |
+| `extended_agent_card` | `bool` | `False` | Advertise extended agent card capability in the agent card |
+| `extensions` | `list[AgentExtension] \| None` | `None` | Protocol extensions (declarative, appear in agent card) |
 
 !!! warning "Streaming is opt-in"
     Since v0.0.7, streaming defaults to `False`. Agents that use streaming must explicitly enable it:

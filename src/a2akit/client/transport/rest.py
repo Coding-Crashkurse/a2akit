@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING, Any
 
-from a2a.types import Message, MessageSendParams, Task
+from a2a.types import AgentCard, Message, MessageSendParams, Task
 
 from a2akit.client.errors import (
     A2AClientError,
@@ -156,9 +156,9 @@ class RestTransport(Transport):
                 yield event
 
     async def set_push_config(self, task_id: str, config: dict[str, Any]) -> dict[str, Any]:
-        """POST /v1/tasks/{task_id}/pushNotificationConfig:set."""
+        """POST /v1/tasks/{task_id}/pushNotificationConfigs."""
         response = await self._http.post(
-            self._url(f"/tasks/{task_id}/pushNotificationConfig:set"),
+            self._url(f"/tasks/{task_id}/pushNotificationConfigs"),
             json=config,
             headers=self._headers(),
         )
@@ -166,10 +166,10 @@ class RestTransport(Transport):
         return response.json()  # type: ignore[no-any-return]
 
     async def get_push_config(self, task_id: str, config_id: str | None = None) -> dict[str, Any]:
-        """GET /v1/tasks/{task_id}/pushNotificationConfig[/{config_id}]."""
-        path = f"/tasks/{task_id}/pushNotificationConfig"
+        """GET /v1/tasks/{task_id}/pushNotificationConfigs/{configId}."""
+        path = f"/tasks/{task_id}/pushNotificationConfigs"
         if config_id:
-            path = f"/tasks/{task_id}/pushNotificationConfig/{config_id}"
+            path = f"/tasks/{task_id}/pushNotificationConfigs/{config_id}"
         response = await self._http.get(
             self._url(path),
             headers=self._headers(),
@@ -178,21 +178,30 @@ class RestTransport(Transport):
         return response.json()  # type: ignore[no-any-return]
 
     async def list_push_configs(self, task_id: str) -> list[dict[str, Any]]:
-        """GET /v1/tasks/{task_id}/pushNotificationConfig:list."""
+        """GET /v1/tasks/{task_id}/pushNotificationConfigs."""
         response = await self._http.get(
-            self._url(f"/tasks/{task_id}/pushNotificationConfig:list"),
+            self._url(f"/tasks/{task_id}/pushNotificationConfigs"),
             headers=self._headers(),
         )
         self._check_error(response, task_id=task_id)
         return response.json()  # type: ignore[no-any-return]
 
     async def delete_push_config(self, task_id: str, config_id: str) -> None:
-        """DELETE /v1/tasks/{task_id}/pushNotificationConfig/{config_id}."""
+        """DELETE /v1/tasks/{task_id}/pushNotificationConfigs/{configId}."""
         response = await self._http.delete(
-            self._url(f"/tasks/{task_id}/pushNotificationConfig/{config_id}"),
+            self._url(f"/tasks/{task_id}/pushNotificationConfigs/{config_id}"),
             headers=self._headers(),
         )
         self._check_error(response, task_id=task_id)
+
+    async def get_extended_card(self) -> AgentCard:
+        """GET /v1/card — fetch the authenticated extended agent card."""
+        response = await self._http.get(
+            self._url("/card"),
+            headers=self._headers(),
+        )
+        self._check_error(response)
+        return AgentCard.model_validate(response.json())
 
     async def close(self) -> None:
         """No-op; HTTP client lifecycle is managed externally."""

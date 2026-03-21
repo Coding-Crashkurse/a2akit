@@ -4,6 +4,26 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.0.14] — 2026-03-21
+
+### Added
+- **Authenticated Extended Card** (`agent/getAuthenticatedExtendedCard`) — A2A §5.5,
+  §7.10, §9.1. Agents can now serve a richer agent card to authenticated callers.
+  - New `extended_card_provider` parameter on `A2AServer` — async callback that
+    receives the `Request` and returns an `AgentCardConfig`. When set,
+    `supportsAuthenticatedExtendedCard` is automatically set to `True` on the
+    public card.
+  - REST: `GET /v1/card` returns the extended card (404 when not configured).
+  - JSON-RPC: `agent/getAuthenticatedExtendedCard` method with error code `-32007`.
+  - `A2AClient.get_extended_card()` — fetches the extended card via both transports.
+  - `AgentCardConfig.supports_authenticated_extended_card` field (default `False`).
+  - `examples/authenticated_card/` — server and client example.
+  - Comprehensive tests (REST, JSON-RPC, client integration, config flags).
+
+### Changed
+- `CapabilitiesConfig` no longer raises `NotImplementedError` when
+  `extended_agent_card=True`. The field is now accepted without error.
+
 ## [0.0.13] — 2026-03-20
 
 ### Added

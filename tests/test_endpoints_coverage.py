@@ -363,16 +363,16 @@ async def test_push_notification_config_stubs():
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
             task_id = "some-task"
 
-            resp = await client.post(f"/v1/tasks/{task_id}/pushNotificationConfig:set", json={})
+            resp = await client.post(f"/v1/tasks/{task_id}/pushNotificationConfigs", json={})
             assert resp.status_code == 501
 
-            resp = await client.get(f"/v1/tasks/{task_id}/pushNotificationConfig")
+            resp = await client.get(f"/v1/tasks/{task_id}/pushNotificationConfigs/cfg-1")
             assert resp.status_code == 501
 
-            resp = await client.get(f"/v1/tasks/{task_id}/pushNotificationConfig:list")
+            resp = await client.get(f"/v1/tasks/{task_id}/pushNotificationConfigs")
             assert resp.status_code == 501
 
-            resp = await client.delete(f"/v1/tasks/{task_id}/pushNotificationConfig/cfg-1")
+            resp = await client.delete(f"/v1/tasks/{task_id}/pushNotificationConfigs/cfg-1")
             assert resp.status_code == 501
 
 

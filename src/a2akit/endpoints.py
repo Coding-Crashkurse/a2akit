@@ -336,7 +336,7 @@ def build_a2a_router() -> APIRouter:
         except Exception:
             logger.exception("SSE subscribe stream aborted")
 
-    @router.post("/v1/tasks/{task_id}/pushNotificationConfig:set", tags=["Push Notifications"])
+    @router.post("/v1/tasks/{task_id}/pushNotificationConfigs", tags=["Push Notifications"])
     async def push_config_set(request: Request, task_id: str = Path()) -> JSONResponse:
         """Set a push notification config for a task."""
         _check_push_supported(request)
@@ -349,7 +349,7 @@ def build_a2a_router() -> APIRouter:
         return JSONResponse(content=_serialize_tpnc(result))
 
     @router.get(
-        "/v1/tasks/{task_id}/pushNotificationConfig/{config_id}",
+        "/v1/tasks/{task_id}/pushNotificationConfigs/{config_id}",
         tags=["Push Notifications"],
     )
     async def push_config_get_by_id(
@@ -366,18 +366,7 @@ def build_a2a_router() -> APIRouter:
         result = await handle_get_config(push_store, storage, task_id, config_id)
         return JSONResponse(content=_serialize_tpnc(result))
 
-    @router.get("/v1/tasks/{task_id}/pushNotificationConfig", tags=["Push Notifications"])
-    async def push_config_get(request: Request, task_id: str = Path()) -> JSONResponse:
-        """Get the default push notification config."""
-        _check_push_supported(request)
-        push_store = _get_push_store(request)
-        storage = _get_storage(request)
-        from a2akit.push.endpoints import _serialize_tpnc, handle_get_config
-
-        result = await handle_get_config(push_store, storage, task_id)
-        return JSONResponse(content=_serialize_tpnc(result))
-
-    @router.get("/v1/tasks/{task_id}/pushNotificationConfig:list", tags=["Push Notifications"])
+    @router.get("/v1/tasks/{task_id}/pushNotificationConfigs", tags=["Push Notifications"])
     async def push_config_list(request: Request, task_id: str = Path()) -> JSONResponse:
         """List all push notification configs for a task."""
         _check_push_supported(request)
@@ -389,7 +378,7 @@ def build_a2a_router() -> APIRouter:
         return JSONResponse(content=[_serialize_tpnc(c) for c in configs])
 
     @router.delete(
-        "/v1/tasks/{task_id}/pushNotificationConfig/{config_id}",
+        "/v1/tasks/{task_id}/pushNotificationConfigs/{config_id}",
         tags=["Push Notifications"],
     )
     async def push_config_delete(
@@ -405,6 +394,26 @@ def build_a2a_router() -> APIRouter:
 
         await handle_delete_config(push_store, storage, task_id, config_id)
         return JSONResponse(status_code=204, content=None)
+
+    @router.get("/v1/card", tags=["Discovery"])
+    async def get_authenticated_extended_card(request: Request) -> JSONResponse:
+        """Return the authenticated extended agent card."""
+        provider = getattr(request.app.state, "extended_card_provider", None)
+        if provider is None:
+            raise HTTPException(
+                status_code=404,
+                detail={"code": -32007, "message": "Authenticated Extended Card not configured"},
+            )
+        extended_config: AgentCardConfig = await provider(request)
+        base_url = external_base_url(
+            dict(request.headers),
+            request.url.scheme,
+            request.url.netloc,
+        )
+        card = build_agent_card(extended_config, base_url)
+        return JSONResponse(
+            content=json.loads(card.model_dump_json(by_alias=True, exclude_none=True))
+        )
 
     @router.get("/v1/health", tags=["Health"])
     async def health_check() -> dict[str, str]:

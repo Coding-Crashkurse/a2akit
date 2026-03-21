@@ -379,6 +379,11 @@ class A2AClient:
         transport = self._ensure_connected()
         await transport.delete_push_config(task_id, config_id)
 
+    async def get_extended_card(self) -> AgentCard:
+        """Fetch the authenticated extended agent card."""
+        transport = self._ensure_connected()
+        return await transport.get_extended_card()
+
     @staticmethod
     def _build_params(
         parts: list[Part],
