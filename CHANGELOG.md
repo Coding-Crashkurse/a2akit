@@ -4,6 +4,22 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.0.15] — 2026-03-21
+
+### Added
+- **AgentCard Validator Hook** — optional `card_validator` parameter on `A2AClient`.
+  - Accepts a `Callable[[AgentCard, bytes], None]` invoked during `connect()`, after
+    the card is parsed but before the client accepts it.
+  - Receives the parsed `AgentCard` and the raw HTTP response body (`bytes`) — the
+    raw bytes are needed for JWS detached-payload verification where re-serialization
+    would break the signature.
+  - If the callable raises, `connect()` propagates the exception and the client stays
+    disconnected.
+  - `None` (default): no validation, behaviour identical to previous releases.
+  - `examples/card_validator/` — server with JWS signature and three client validators
+    (name allowlist, provider domain check, signature presence).
+  - Comprehensive unit and integration tests.
+
 ## [0.0.14] — 2026-03-21
 
 ### Added

@@ -37,7 +37,7 @@ from a2akit.telemetry._semantic import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncIterator, Callable
 
     from a2akit.client.transport.base import Transport
 
@@ -60,6 +60,7 @@ class A2AClient:
         timeout: float = 30.0,
         protocol: str | None = None,
         httpx_client: httpx.AsyncClient | None = None,
+        card_validator: Callable[[AgentCard, bytes], None] | None = None,
     ) -> None:
         self._url = url.rstrip("/")
         self._headers = headers or {}
@@ -67,6 +68,7 @@ class A2AClient:
         self._protocol_preference = protocol
         self._external_http = httpx_client is not None
         self._http_client = httpx_client
+        self._card_validator = card_validator
         self._agent_card: AgentCard | None = None
         self._transport: Transport | None = None
         self._connected = False
@@ -95,6 +97,9 @@ class A2AClient:
             self._agent_card = AgentCard.model_validate(card_data)
         except Exception as exc:
             raise AgentNotFoundError(self._url, f"Invalid agent card: {exc}") from exc
+
+        if self._card_validator is not None:
+            self._card_validator(self._agent_card, resp.content)
 
         proto = self._detect_protocol(self._agent_card)
         self._active_protocol = proto

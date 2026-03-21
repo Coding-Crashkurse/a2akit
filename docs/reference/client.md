@@ -22,6 +22,7 @@ A2AClient(
     timeout: float = 30.0,
     protocol: str | None = None,
     httpx_client: httpx.AsyncClient | None = None,
+    card_validator: Callable[[AgentCard, bytes], None] | None = None,
 )
 ```
 
@@ -32,6 +33,7 @@ A2AClient(
 | `timeout` | `float` | `30.0` | HTTP timeout in seconds |
 | `protocol` | `str` | `None` | Force protocol (`"jsonrpc"` or `"http+json"`). Auto-detected from agent card if `None` |
 | `httpx_client` | `AsyncClient` | `None` | Bring your own httpx client. Lifecycle is managed externally |
+| `card_validator` | `Callable` | `None` | Optional hook called during `connect()` with the parsed `AgentCard` and raw response bytes. Raise to reject the card |
 
 ## Lifecycle
 
@@ -148,6 +150,34 @@ for skill in extended.skills:
 
 !!! note "Requires `supportsAuthenticatedExtendedCard`"
     Returns 404 (REST) or error code `-32007` (JSON-RPC) if the agent has not configured an `extended_card_provider`.
+
+## Card Validation
+
+The `card_validator` parameter lets you verify the agent card before accepting it. The callable receives the parsed `AgentCard` and the raw HTTP response body as `bytes`. If it raises, `connect()` propagates the exception and the client stays disconnected.
+
+The raw bytes argument exists for JWS signature verification — re-serializing via `card.model_dump_json()` may produce different bytes (key ordering, whitespace), which would break detached-payload signatures.
+
+```python
+# Name allowlist
+TRUSTED = {"My Agent", "Internal Router"}
+
+def check_allowlist(card, raw_body):
+    if card.name not in TRUSTED:
+        raise ValueError(f"Untrusted agent: {card.name}")
+
+async with A2AClient(url, card_validator=check_allowlist) as client:
+    result = await client.send("Hello")
+```
+
+```python
+# Signature presence check
+def require_signatures(card, raw_body):
+    if not card.signatures:
+        raise ValueError("Agent card has no JWS signatures")
+
+async with A2AClient(url, card_validator=require_signatures) as client:
+    ...
+```
 
 ## Properties
 
