@@ -18,10 +18,16 @@ from a2akit.client import A2AClient, ClientResult
 from a2akit.client import StreamEvent as ClientStreamEvent
 from a2akit.config import Settings, get_settings
 from a2akit.dependencies import Dependency, DependencyContainer
+from a2akit.errors import AuthenticationRequiredError
 from a2akit.event_bus import EventBus, InMemoryEventBus
 from a2akit.event_emitter import DefaultEventEmitter, EventEmitter
 from a2akit.hooks import HookableEmitter, LifecycleHooks
-from a2akit.middleware import A2AMiddleware, RequestEnvelope
+from a2akit.middleware import (
+    A2AMiddleware,
+    ApiKeyMiddleware,
+    BearerTokenMiddleware,
+    RequestEnvelope,
+)
 from a2akit.push import (
     InMemoryPushConfigStore,
     PushConfigStore,
@@ -54,7 +60,10 @@ __all__ = [
     "A2AMiddleware",
     "A2AServer",
     "AgentCardConfig",
+    "ApiKeyMiddleware",
     "ArtifactWrite",
+    "AuthenticationRequiredError",
+    "BearerTokenMiddleware",
     "Broker",
     "CancelRegistry",
     "CapabilitiesConfig",

@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import uuid
-from typing import TYPE_CHECKING, Any, Self
+from typing import TYPE_CHECKING, Any, Self, TypeVar
 
 import httpx
 from a2a.types import (
@@ -37,9 +38,11 @@ from a2akit.telemetry._semantic import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Callable
+    from collections.abc import AsyncIterator, Awaitable, Callable
 
     from a2akit.client.transport.base import Transport
+
+_T = TypeVar("_T")
 
 
 class A2AClient:
@@ -61,6 +64,13 @@ class A2AClient:
         protocol: str | None = None,
         httpx_client: httpx.AsyncClient | None = None,
         card_validator: Callable[[AgentCard, bytes], None] | None = None,
+        max_retries: int = 0,
+        retry_delay: float = 1.0,
+        retry_on: tuple[type[Exception], ...] = (
+            httpx.ConnectError,
+            httpx.ConnectTimeout,
+            httpx.ReadTimeout,
+        ),
     ) -> None:
         self._url = url.rstrip("/")
         self._headers = headers or {}
@@ -73,10 +83,19 @@ class A2AClient:
         self._transport: Transport | None = None
         self._connected = False
         self._active_protocol: str = ""
+        # Retry config
+        self._max_retries = max_retries
+        self._retry_delay = retry_delay
+        self._retry_on = retry_on
 
     @traced_client_method(SPAN_CLIENT_CONNECT)
     async def connect(self) -> None:
-        """Discover agent and prepare transport."""
+        """Discover agent and prepare transport.
+
+        Implements transport fallback (Spec §5.6.3): if the preferred
+        transport fails a health check, tries ``additionalInterfaces``
+        from the agent card before giving up.
+        """
         if self._http_client is None:
             self._http_client = httpx.AsyncClient(
                 headers=self._headers,
@@ -101,16 +120,74 @@ class A2AClient:
         if self._card_validator is not None:
             self._card_validator(self._agent_card, resp.content)
 
-        proto = self._detect_protocol(self._agent_card)
-        self._active_protocol = proto
+        # Build transport candidates: preferred first, then additionalInterfaces
+        candidates = self._build_transport_candidates(self._agent_card)
 
-        agent_url = self._agent_card.url
-        if proto == "http+json":
-            self._transport = RestTransport(self._http_client, agent_url)
+        errors: list[tuple[str, str, Exception]] = []
+        for url, proto in candidates:
+            try:
+                transport = self._create_transport(proto, url)
+                await transport.health_check()
+            except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+                errors.append((url, proto, exc))
+                continue
+            except Exception:
+                # Health check might not exist or might fail for other reasons;
+                # accept the transport anyway (backwards compat).
+                pass
+
+            self._transport = transport
+            self._active_protocol = proto
+            self._connected = True
+            return
+
+        # All candidates failed — only happens when all raised connect errors
+        if errors:
+            detail = "; ".join(f"{proto}@{url}: {exc}" for url, proto, exc in errors)
+            raise AgentNotFoundError(self._url, f"All transports failed: {detail}")
+
+        # Fallback: should not reach here, but just in case
+        raise AgentNotFoundError(self._url, "No suitable transport found")
+
+    def _build_transport_candidates(self, card: AgentCard) -> list[tuple[str, str]]:
+        """Build ordered list of (url, protocol) transport candidates."""
+        candidates: list[tuple[str, str]] = []
+
+        # Preferred transport first
+        preferred_proto = self._detect_protocol(card)
+        candidates.append((card.url, preferred_proto))
+
+        # Additional interfaces as fallback
+        for iface in card.additional_interfaces or []:
+            proto = self._protocol_from_transport(iface.transport)
+            if proto:
+                entry = (iface.url or card.url, proto)
+                if entry not in candidates:
+                    candidates.append(entry)
+
+        return candidates
+
+    @staticmethod
+    def _protocol_from_transport(transport: Any) -> str | None:
+        """Map a TransportProtocol to our internal protocol string."""
+        if isinstance(transport, TransportProtocol):
+            val = transport.value
         else:
-            self._transport = JsonRpcTransport(self._http_client, agent_url)
+            val = str(transport)
 
-        self._connected = True
+        val_lower = val.lower()
+        if "http" in val_lower or ("json" in val_lower and "rpc" not in val_lower):
+            return "http+json"
+        if "jsonrpc" in val_lower or "rpc" in val_lower:
+            return "jsonrpc"
+        return None
+
+    def _create_transport(self, proto: str, url: str) -> Transport:
+        """Create a transport instance for the given protocol."""
+        assert self._http_client is not None
+        if proto == "http+json":
+            return RestTransport(self._http_client, url)
+        return JsonRpcTransport(self._http_client, url)
 
     def _detect_protocol(self, card: AgentCard) -> str:
         """Determine which protocol to use."""
@@ -118,19 +195,23 @@ class A2AClient:
             return self._protocol_preference
 
         if card.preferred_transport is not None:
-            pt = card.preferred_transport
-            if isinstance(pt, TransportProtocol):
-                pt_val = pt.value
-            else:
-                pt_val = str(pt)
-
-            pt_lower = pt_val.lower()
-            if "http" in pt_lower or ("json" in pt_lower and "rpc" not in pt_lower):
-                return "http+json"
-            if "jsonrpc" in pt_lower or "rpc" in pt_lower:
-                return "jsonrpc"
+            result = self._protocol_from_transport(card.preferred_transport)
+            if result:
+                return result
 
         return "jsonrpc"
+
+    async def _with_retry(self, coro_factory: Callable[[], Awaitable[_T]]) -> _T:
+        """Execute with exponential backoff retries on network errors."""
+        last_exc: Exception | None = None
+        for attempt in range(self._max_retries + 1):
+            try:
+                return await coro_factory()
+            except self._retry_on as exc:
+                last_exc = exc
+                if attempt < self._max_retries:
+                    await asyncio.sleep(self._retry_delay * (2**attempt))
+        raise last_exc  # type: ignore[misc]
 
     async def close(self) -> None:
         """Clean up resources."""
@@ -232,7 +313,11 @@ class A2AClient:
             blocking=blocking,
             metadata=metadata,
         )
-        result = await transport.send_message(params)
+
+        async def _do_send() -> Task | Message:
+            return await transport.send_message(params)
+
+        result = await self._with_retry(_do_send) if self._max_retries > 0 else await _do_send()
         if isinstance(result, Message):
             return ClientResult.from_message(result)
         return ClientResult.from_task(result)
@@ -286,7 +371,11 @@ class A2AClient:
     ) -> ClientResult:
         """Fetch a task by ID."""
         transport = self._ensure_connected()
-        task = await transport.get_task(task_id, history_length)
+
+        async def _do_get() -> Task:
+            return await transport.get_task(task_id, history_length)
+
+        task = await self._with_retry(_do_get) if self._max_retries > 0 else await _do_get()
         return ClientResult.from_task(task)
 
     @traced_client_method(SPAN_CLIENT_LIST_TASKS)
@@ -311,7 +400,10 @@ class A2AClient:
         if history_length is not None:
             query["historyLength"] = history_length
 
-        raw = await transport.list_tasks(query)
+        async def _do_list() -> dict[str, Any]:
+            return await transport.list_tasks(query)
+
+        raw = await self._with_retry(_do_list) if self._max_retries > 0 else await _do_list()
         tasks_data = raw.get("tasks", []) if isinstance(raw, dict) else []
         results = [ClientResult.from_task(Task.model_validate(t)) for t in tasks_data]
         return ListResult(
@@ -325,17 +417,31 @@ class A2AClient:
     async def cancel(self, task_id: str) -> ClientResult:
         """Cancel a task by ID."""
         transport = self._ensure_connected()
-        task = await transport.cancel_task(task_id)
+
+        async def _do_cancel() -> Task:
+            return await transport.cancel_task(task_id)
+
+        task = await self._with_retry(_do_cancel) if self._max_retries > 0 else await _do_cancel()
         return ClientResult.from_task(task)
 
-    async def subscribe(self, task_id: str) -> AsyncIterator[StreamEvent]:
-        """Subscribe to updates for an existing task."""
+    async def subscribe(
+        self,
+        task_id: str,
+        *,
+        last_event_id: str | None = None,
+    ) -> AsyncIterator[StreamEvent]:
+        """Subscribe to updates for an existing task.
+
+        Args:
+            task_id: The task to subscribe to.
+            last_event_id: Resume from this event ID (SSE Last-Event-ID replay).
+        """
         transport = self._ensure_connected()
         card = self.agent_card
         if not card.capabilities or not card.capabilities.streaming:
             raise AgentCapabilityError(card.name, "streaming")
 
-        async for event in transport.subscribe_task(task_id):
+        async for event in transport.subscribe_task(task_id, last_event_id=last_event_id):
             yield event
 
     async def set_push_config(

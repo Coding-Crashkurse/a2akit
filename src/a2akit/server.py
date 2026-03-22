@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from a2akit.agent_card import validate_protocol
 from a2akit.broker import (
@@ -19,6 +20,7 @@ from a2akit.broker import (
 from a2akit.config import Settings, get_settings
 from a2akit.dependencies import DependencyContainer
 from a2akit.endpoints import build_a2a_router, build_discovery_router
+from a2akit.errors import AuthenticationRequiredError
 from a2akit.event_bus import EventBus, InMemoryEventBus
 from a2akit.event_emitter import DefaultEventEmitter, EventEmitter
 from a2akit.hooks import HookableEmitter, LifecycleHooks
@@ -40,10 +42,62 @@ from a2akit.worker import Worker, WorkerAdapter
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Awaitable, Callable
 
+    from starlette.responses import Response
+
     from a2akit.agent_card import AgentCardConfig
     from a2akit.middleware import A2AMiddleware
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Content-Type validation middleware (Spec §3.2 MUST)
+# ---------------------------------------------------------------------------
+
+
+class ContentTypeValidationMiddleware(BaseHTTPMiddleware):
+    """Reject requests without ``application/json`` Content-Type (Spec §3.2)."""
+
+    _EXEMPT_PATHS: frozenset[str] = frozenset(
+        {
+            "/.well-known/agent-card.json",
+            "/v1/health",
+            "/chat",
+        }
+    )
+    _EXEMPT_METHODS: frozenset[str] = frozenset({"GET", "DELETE", "OPTIONS", "HEAD"})
+
+    async def dispatch(self, request: Request, call_next: Any) -> Response:
+        has_body = int(request.headers.get("content-length", "0")) > 0
+        if (
+            request.method not in self._EXEMPT_METHODS
+            and request.url.path not in self._EXEMPT_PATHS
+            and not request.url.path.startswith("/chat/")
+            and has_body
+        ):
+            content_type = request.headers.get("content-type", "")
+            if content_type.split(";")[0].strip().lower() != "application/json":
+                return JSONResponse(
+                    status_code=415,
+                    content={
+                        "jsonrpc": "2.0",
+                        "error": {
+                            "code": -32600,
+                            "message": (
+                                f"Unsupported Content-Type: {content_type}. "
+                                f"Expected application/json."
+                            ),
+                        },
+                        "id": None,
+                    },
+                )
+        response: Response = await call_next(request)
+        return response
+
+
+# ---------------------------------------------------------------------------
+# A2AServer
+# ---------------------------------------------------------------------------
 
 
 class A2AServer:
@@ -66,6 +120,8 @@ class A2AServer:
         settings: Settings | None = None,
         dependencies: dict[Any, Any] | None = None,
         enable_telemetry: bool | None = None,
+        # Multi-transport (Spec §3.4, §5.5)
+        additional_protocols: list[str] | None = None,
         # Push notification options
         push_max_retries: int | None = None,
         push_retry_delay: float | None = None,
@@ -101,6 +157,7 @@ class A2AServer:
         self._settings = s
         self._hooks = hooks
         self._enable_telemetry = enable_telemetry
+        self._additional_protocols = additional_protocols or []
         self._deps = DependencyContainer(dependencies)
         # Push notification config
         self._push_max_retries = (
@@ -279,6 +336,9 @@ class A2AServer:
 
         app = FastAPI(lifespan=lifespan, **fastapi_kwargs)
 
+        # Content-Type validation (Spec §3.2 MUST)
+        app.add_middleware(ContentTypeValidationMiddleware)
+
         # REQ-09: A2A-Version response header on all responses.
         @app.middleware("http")
         async def _add_a2a_version_header(request: Request, call_next: Any) -> Any:
@@ -294,19 +354,49 @@ class A2AServer:
             mount_chat_ui(app)
             logger.info("Debug UI available at /chat")
 
+        # Mount routers: preferred protocol + additional protocols
         protocol = self._card_config.protocol
+        mounted: set[str] = set()
+
         if protocol == "jsonrpc":
             app.include_router(build_jsonrpc_router())
+            mounted.add("jsonrpc")
         elif protocol == "http+json":
             app.include_router(build_a2a_router())
+            mounted.add("http+json")
 
-        app.include_router(build_discovery_router(self._card_config))
+        for proto in self._additional_protocols:
+            normalized = proto.lower().replace(" ", "")
+            if normalized in ("jsonrpc",) and "jsonrpc" not in mounted:
+                app.include_router(build_jsonrpc_router())
+                mounted.add("jsonrpc")
+            elif normalized in ("http+json", "http", "rest") and "http+json" not in mounted:
+                app.include_router(build_a2a_router())
+                mounted.add("http+json")
+
+        app.include_router(
+            build_discovery_router(self._card_config, self._additional_protocols or None)
+        )
 
         return app
 
 
 def _register_exception_handlers(app: FastAPI) -> None:
     """Register JSON-RPC style exception handlers for A2A storage errors."""
+
+    @app.exception_handler(AuthenticationRequiredError)
+    async def handle_auth_required(
+        _req: Request, exc: AuthenticationRequiredError
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=401,
+            content={
+                "jsonrpc": "2.0",
+                "error": {"code": -32603, "message": str(exc)},
+                "id": None,
+            },
+            headers={"WWW-Authenticate": f'{exc.scheme} realm="{exc.realm}"'},
+        )
 
     @app.exception_handler(TaskNotFoundError)
     async def handle_task_not_found(_req: Request, _exc: TaskNotFoundError) -> JSONResponse:

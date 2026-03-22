@@ -142,14 +142,19 @@ class JsonRpcTransport(Transport):
         result = await self._call("tasks/cancel", {"id": task_id}, task_id=task_id)
         return Task.model_validate(result)
 
-    async def subscribe_task(self, task_id: str) -> AsyncIterator[StreamEvent]:
+    async def subscribe_task(
+        self, task_id: str, *, last_event_id: str | None = None
+    ) -> AsyncIterator[StreamEvent]:
         """JSON-RPC tasks/resubscribe (SSE response)."""
         envelope = self._envelope("tasks/resubscribe", {"id": task_id})
+        headers = self._headers()
+        if last_event_id:
+            headers["Last-Event-ID"] = last_event_id
         async with self._http.stream(
             "POST",
             self._url,
             json=envelope,
-            headers=self._headers(),
+            headers=headers,
         ) as response:
             if not response.is_success:
                 await response.aread()
@@ -195,6 +200,10 @@ class JsonRpcTransport(Transport):
         """JSON-RPC agent/getAuthenticatedExtendedCard."""
         result = await self._call("agent/getAuthenticatedExtendedCard")
         return AgentCard.model_validate(result)
+
+    async def health_check(self) -> None:
+        """JSON-RPC health method — lightweight connectivity check."""
+        await self._call("health", {})
 
     async def close(self) -> None:
         """No-op; HTTP client lifecycle is managed externally."""

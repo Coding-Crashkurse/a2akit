@@ -4,6 +4,55 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.0.17] — 2026-03-22
+
+### Added
+- **Simultaneous Multi-Transport** (Spec §3.4, §5.5) — `A2AServer` now accepts
+  `additional_protocols=["HTTP"]` (or `["JSONRPC"]`) to serve both JSON-RPC and
+  REST transports in parallel. The agent card's `additionalInterfaces` is
+  populated automatically. `examples/multi_transport/`.
+- **Content-Type Request Validation** (Spec §3.2 MUST) — new
+  `ContentTypeValidationMiddleware` rejects POST requests without
+  `Content-Type: application/json` with HTTP 415. GET, DELETE, OPTIONS, HEAD,
+  and discovery/health/chat paths are exempt.
+- **`AuthenticationRequiredError` + `WWW-Authenticate` Header** (Spec §4.4
+  SHOULD) — new exception type in `a2akit.errors`. The server exception handler
+  returns HTTP 401 with `WWW-Authenticate: <scheme> realm="<realm>"`.
+- **Built-in Auth Middlewares** (Spec §4.3–4.4):
+  - `BearerTokenMiddleware` — validates `Authorization: Bearer <token>` via
+    async verify callback. Claims available at `ctx.request_context["auth_claims"]`.
+  - `ApiKeyMiddleware` — validates API keys from a configurable header
+    (default `X-API-Key`). Key available at `ctx.request_context["api_key"]`.
+  - Both raise `AuthenticationRequiredError` on failure and support
+    `exclude_paths` for public routes.
+  - `examples/auth_bearer/`, `examples/auth_apikey/`.
+- **`request_auth()` with structured DataPart** (Spec §4.5 SHOULD) — new
+  keyword arguments `schemes`, `credentials_hint`, `auth_url` on
+  `TaskContext.request_auth()`. When provided, a `DataPart` with structured
+  auth details is included alongside the optional text explanation.
+  Backwards compatible — `request_auth("text")` still works as before.
+- **Client: `last_event_id` on `subscribe()`** (Spec §7.9) — the client now
+  passes `Last-Event-ID` as HTTP header when calling `subscribe(task_id,
+  last_event_id="...")`, enabling SSE replay after reconnect. Both REST and
+  JSON-RPC transports support this. `examples/subscribe_replay/`.
+- **Client: Transport Fallback** (Spec §5.6.3 SHOULD) — `connect()` now builds
+  a candidate list from the agent card's `preferredTransport` +
+  `additionalInterfaces` and tries each with a health check. On connect failure,
+  falls back to the next transport. New `health_check()` method on both
+  transports. `examples/transport_fallback/`.
+- **Client: Configurable Retries** — `A2AClient` now accepts `max_retries`,
+  `retry_delay`, and `retry_on` parameters. Retries use exponential backoff.
+  Applied to `send_parts`, `get_task`, `list_tasks`, `cancel`. NOT applied to
+  streaming methods (use `subscribe()` + `last_event_id` for stream recovery).
+  Default: `max_retries=0` (no retries, backwards compatible).
+
+### Changed
+- **Middleware restructured as package** — `a2akit.middleware` is now a package
+  (`middleware/__init__.py`, `middleware/base.py`, `middleware/auth.py`) instead
+  of a single file. All existing imports remain unchanged — no breaking change.
+- `AuthenticationRequiredError`, `BearerTokenMiddleware`, `ApiKeyMiddleware`
+  exported from `a2akit` top-level.
+
 ## [0.0.16] — 2026-03-21
 
 ### Added

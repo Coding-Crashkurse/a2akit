@@ -308,8 +308,22 @@ class TaskContext(ABC):
         """Transition to input-required state."""
 
     @abstractmethod
-    async def request_auth(self, details: str | None = None) -> None:
-        """Transition to auth-required state for secondary credentials."""
+    async def request_auth(
+        self,
+        details: str | None = None,
+        *,
+        schemes: list[str] | None = None,
+        credentials_hint: str | None = None,
+        auth_url: str | None = None,
+    ) -> None:
+        """Transition to auth-required state for secondary credentials.
+
+        Args:
+            details: Human-readable text explanation.
+            schemes: Required auth schemes (e.g. ``["Bearer", "OAuth2"]``).
+            credentials_hint: Hint about what credentials are needed.
+            auth_url: URL where the client can obtain credentials.
+        """
 
     @abstractmethod
     async def respond(self, text: str | None = None) -> None:
@@ -656,10 +670,34 @@ class TaskContextImpl(TaskContext):
         await self._emit_status(TaskState.input_required, message=input_message)
         self._turn_ended = True
 
-    async def request_auth(self, details: str | None = None) -> None:
+    async def request_auth(
+        self,
+        details: str | None = None,
+        *,
+        schemes: list[str] | None = None,
+        credentials_hint: str | None = None,
+        auth_url: str | None = None,
+    ) -> None:
         """Transition to auth-required state for secondary credentials."""
-        auth_text = details or "Authentication required."
-        auth_message = self._make_agent_message([Part(TextPart(text=auth_text))])
+        parts: list[Part] = []
+
+        if details:
+            parts.append(Part(TextPart(text=details)))
+
+        if schemes or credentials_hint or auth_url:
+            auth_data: dict[str, Any] = {}
+            if schemes:
+                auth_data["schemes"] = schemes
+            if credentials_hint:
+                auth_data["credentialsHint"] = credentials_hint
+            if auth_url:
+                auth_data["authUrl"] = auth_url
+            parts.append(Part(DataPart(data=auth_data)))
+
+        if not parts:
+            parts.append(Part(TextPart(text="Authentication required.")))
+
+        auth_message = self._make_agent_message(parts)
         await self._versioned_update(
             self.task_id,
             state=TaskState.auth_required,

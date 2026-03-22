@@ -115,3 +115,66 @@ Called after TaskManager returns, before the HTTP response is sent. The same `en
 
 !!! warning "Never persist secrets"
     Always move sensitive data (tokens, API keys, passwords) from `metadata` to `context` in your middleware. Data left in `metadata` is written to Storage and may appear in task history.
+
+## Built-in Auth Middlewares
+
+a2akit ships two ready-made auth middlewares. Both raise `AuthenticationRequiredError` which the server maps to HTTP 401 with a `WWW-Authenticate` header.
+
+### BearerTokenMiddleware
+
+Validates `Authorization: Bearer <token>` headers via a user-provided async verify function:
+
+```python
+from a2akit import A2AServer, AgentCardConfig, BearerTokenMiddleware
+
+async def verify(token: str) -> dict | None:
+    """Return claims dict or None if invalid."""
+    if token == "valid-token":
+        return {"sub": "user1"}
+    return None
+
+server = A2AServer(
+    worker=...,
+    agent_card=AgentCardConfig(name="Protected Agent", description="..."),
+    middlewares=[BearerTokenMiddleware(verify=verify)],
+)
+```
+
+On success, the claims dict is available via `ctx.request_context["auth_claims"]` and the raw token via `ctx.request_context["auth_token"]`.
+
+### ApiKeyMiddleware
+
+Validates API keys from a configurable header (default: `X-API-Key`):
+
+```python
+from a2akit import A2AServer, AgentCardConfig, ApiKeyMiddleware
+
+server = A2AServer(
+    worker=...,
+    agent_card=AgentCardConfig(name="API Key Agent", description="..."),
+    middlewares=[ApiKeyMiddleware(valid_keys={"sk-abc123", "sk-def456"})],
+)
+```
+
+The validated key is available via `ctx.request_context["api_key"]`.
+
+### Path Exclusion
+
+Both middlewares accept `exclude_paths` to skip authentication for specific routes (default: `{"/v1/health"}`). Agent Card Discovery (`GET /.well-known/agent-card.json`) runs outside the middleware pipeline and never requires authentication.
+
+### AuthenticationRequiredError
+
+You can also raise `AuthenticationRequiredError` from your own custom middleware:
+
+```python
+from a2akit import A2AMiddleware, RequestEnvelope
+from a2akit.errors import AuthenticationRequiredError
+from fastapi import Request
+
+class CustomAuth(A2AMiddleware):
+    async def before_dispatch(self, envelope: RequestEnvelope, request: Request) -> None:
+        if not request.headers.get("X-Custom-Auth"):
+            raise AuthenticationRequiredError(scheme="Custom", realm="myapp")
+```
+
+The server returns HTTP 401 with `WWW-Authenticate: Custom realm="myapp"`.

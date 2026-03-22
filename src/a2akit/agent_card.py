@@ -153,7 +153,11 @@ def validate_protocol(protocol: str) -> str:
     return protocol
 
 
-def build_agent_card(config: AgentCardConfig, base_url: str) -> AgentCard:
+def build_agent_card(
+    config: AgentCardConfig,
+    base_url: str,
+    additional_protocols: list[str] | None = None,
+) -> AgentCard:
     """Build a full AgentCard from user config and the runtime base URL."""
     stripped = base_url.rstrip("/")
     if config.protocol == "jsonrpc":
@@ -163,6 +167,20 @@ def build_agent_card(config: AgentCardConfig, base_url: str) -> AgentCard:
         agent_url = f"{stripped}/v1"
         transport = TransportProtocol.http_json
 
+    # Build additional_interfaces from additional_protocols
+    interfaces = [AgentInterface(url=agent_url, transport=transport)]
+    for proto in additional_protocols or []:
+        normalized = proto.lower().replace(" ", "")
+        if normalized in ("jsonrpc",) and transport != TransportProtocol.jsonrpc:
+            interfaces.append(AgentInterface(url=stripped, transport=TransportProtocol.jsonrpc))
+        elif (
+            normalized in ("http+json", "http", "rest")
+            and transport != TransportProtocol.http_json
+        ):
+            interfaces.append(
+                AgentInterface(url=f"{stripped}/v1", transport=TransportProtocol.http_json)
+            )
+
     caps = config.capabilities
     return AgentCard(
         protocol_version=config.protocol_version,
@@ -170,9 +188,7 @@ def build_agent_card(config: AgentCardConfig, base_url: str) -> AgentCard:
         description=config.description,
         url=agent_url,
         preferred_transport=transport,
-        additional_interfaces=[
-            AgentInterface(url=agent_url, transport=transport),
-        ],
+        additional_interfaces=interfaces,
         version=config.version,
         capabilities=AgentCapabilities(
             extensions=[_to_agent_extension(e) for e in config.extensions] or None,

@@ -429,7 +429,10 @@ def build_a2a_router() -> APIRouter:
     return router
 
 
-def build_discovery_router(card_config: AgentCardConfig) -> APIRouter:
+def build_discovery_router(
+    card_config: AgentCardConfig,
+    additional_protocols: list[str] | None = None,
+) -> APIRouter:
     """Build the agent card discovery router."""
 
     router = APIRouter()
@@ -442,7 +445,7 @@ def build_discovery_router(card_config: AgentCardConfig) -> APIRouter:
             request.url.scheme,
             request.url.netloc,
         )
-        card = build_agent_card(card_config, base_url)
+        card = build_agent_card(card_config, base_url, additional_protocols)
         return JSONResponse(
             content=json.loads(card.model_dump_json(by_alias=True, exclude_none=True))
         )

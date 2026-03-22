@@ -32,7 +32,12 @@ class Transport(ABC):
     async def cancel_task(self, task_id: str) -> Task: ...
 
     @abstractmethod
-    def subscribe_task(self, task_id: str) -> AsyncIterator[StreamEvent]: ...
+    def subscribe_task(
+        self, task_id: str, *, last_event_id: str | None = None
+    ) -> AsyncIterator[StreamEvent]: ...
+
+    async def health_check(self) -> None:  # noqa: B027
+        """Lightweight connectivity check. Override in subclasses."""
 
     @abstractmethod
     async def set_push_config(self, task_id: str, config: dict[str, Any]) -> dict[str, Any]: ...

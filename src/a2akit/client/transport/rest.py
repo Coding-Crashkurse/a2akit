@@ -142,12 +142,17 @@ class RestTransport(Transport):
         self._check_error(response, task_id=task_id)
         return Task.model_validate(response.json())
 
-    async def subscribe_task(self, task_id: str) -> AsyncIterator[StreamEvent]:
+    async def subscribe_task(
+        self, task_id: str, *, last_event_id: str | None = None
+    ) -> AsyncIterator[StreamEvent]:
         """POST /v1/tasks/{task_id}:subscribe (SSE)."""
+        headers = self._headers()
+        if last_event_id:
+            headers["Last-Event-ID"] = last_event_id
         async with self._http.stream(
             "POST",
             self._url(f"/tasks/{task_id}:subscribe"),
-            headers=self._headers(),
+            headers=headers,
         ) as response:
             if not response.is_success:
                 await response.aread()
@@ -202,6 +207,11 @@ class RestTransport(Transport):
         )
         self._check_error(response)
         return AgentCard.model_validate(response.json())
+
+    async def health_check(self) -> None:
+        """GET /v1/health — lightweight connectivity check."""
+        resp = await self._http.get(self._url("/health"), headers=self._headers())
+        resp.raise_for_status()
 
     async def close(self) -> None:
         """No-op; HTTP client lifecycle is managed externally."""
