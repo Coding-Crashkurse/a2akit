@@ -14,6 +14,12 @@
     pip install a2akit[langgraph]
     ```
 
+=== "pip + Redis"
+
+    ```bash
+    pip install a2akit[redis]
+    ```
+
 === "pip + PostgreSQL"
 
     ```bash

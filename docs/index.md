@@ -60,7 +60,7 @@ Streaming, cancellation, multi-turn conversations, and artifact handling — bat
 
     ---
 
-    Swap in PostgreSQL, SQLite, Redis, or RabbitMQ (coming soon).
+    PostgreSQL, SQLite, Redis broker/event bus/cancel registry — swap independently.
 
 </div>
 

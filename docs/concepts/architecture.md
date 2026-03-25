@@ -91,6 +91,6 @@ Intercepts requests at the HTTP boundary. `before_dispatch` runs before TaskMana
 
 **Storage is authoritative; EventBus is best-effort.** If an EventBus publish fails, the task state is still correct in Storage. Clients polling via GET will always see the right state. SSE subscribers may miss intermediate events but will always see the final status.
 
-**Pluggable backends.** Swap Storage, Broker, EventBus, and CancelRegistry independently — e.g. PostgreSQL storage + Redis broker + Redis event bus. All backends implement their respective ABC.
+**Pluggable backends.** Swap Storage, Broker, EventBus, and CancelRegistry independently — e.g. PostgreSQL storage + Redis broker + Redis event bus. All backends implement their respective ABC. Pass `broker="redis://..."` and `event_bus="redis://..."` to `A2AServer` for multi-process deployments.
 
 **Worker isolation.** Your Worker only sees `TaskContext`. It doesn't know about Storage, Broker, or EventBus. This makes workers easy to test and portable across backend configurations.

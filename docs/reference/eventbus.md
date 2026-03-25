@@ -53,6 +53,50 @@ The buffer size is configurable:
 export A2AKIT_EVENT_BUFFER=200  # default
 ```
 
+## RedisEventBus
+
+Redis-backed event bus using Pub/Sub for live delivery + Streams for replay buffer. Enables `Last-Event-ID` based reconnection across multiple server instances.
+
+```python
+from a2akit import A2AServer
+
+server = A2AServer(
+    worker=MyWorker(),
+    agent_card=AgentCardConfig(...),
+    event_bus="redis://localhost:6379/0",
+)
+```
+
+Or with an explicit instance:
+
+```python
+from a2akit.event_bus.redis import RedisEventBus
+
+event_bus = RedisEventBus(
+    "redis://localhost:6379/0",
+    stream_maxlen=1000,
+)
+
+server = A2AServer(worker=MyWorker(), agent_card=..., event_bus=event_bus)
+```
+
+Requires `pip install a2akit[redis]`.
+
+### Dual-Write Architecture
+
+Each `publish()` call:
+
+1. **XADD** to a per-task replay stream (bounded by `stream_maxlen`)
+2. **PUBLISH** to a per-task Pub/Sub channel (live subscribers)
+
+On `subscribe(after_event_id=...)`:
+
+1. **Replay** — `XRANGE` from the stream after the given ID
+2. **Gap-fill** — re-check for events published between replay and Pub/Sub subscribe
+3. **Live** — async iterate over Pub/Sub messages
+
+This ensures zero event loss even during reconnection.
+
 ## EventEmitter
 
 The `EventEmitter` is a facade that `TaskContext` uses to persist state (Storage) and broadcast events (EventBus) without knowing about either directly.

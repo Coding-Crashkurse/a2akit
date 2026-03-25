@@ -253,20 +253,79 @@ async def sql_storage(request):
                 await session.execute(contexts_table.delete())
 
 
-@pytest.fixture
-async def broker():
-    """Isolated InMemoryBroker instance (entered)."""
-    b = InMemoryBroker()
-    async with b:
-        yield b
+@pytest.fixture(params=["memory", "redis"])
+async def broker(request):
+    """Parametrized broker — runs against both InMemory and Redis backends."""
+    if request.param == "memory":
+        b = InMemoryBroker()
+        async with b:
+            yield b
+    else:
+        import os
+
+        url = os.environ.get("A2AKIT_TEST_REDIS_URL")
+        if not url:
+            pytest.skip("Redis not configured (set A2AKIT_TEST_REDIS_URL)")
+
+        try:
+            from a2akit.broker.redis import RedisBroker
+        except ImportError:
+            pytest.skip("redis-py not installed (pip install a2akit[redis])")
+
+        b = RedisBroker(url, key_prefix=f"a2akit:test:{uuid.uuid4().hex[:8]}:")
+        async with b:
+            yield b
+            # Cleanup test keys
+            await b._redis.flushdb()
 
 
-@pytest.fixture
-async def event_bus():
-    """Isolated InMemoryEventBus instance (entered)."""
-    eb = InMemoryEventBus()
-    async with eb:
-        yield eb
+@pytest.fixture(params=["memory", "redis"])
+async def event_bus(request):
+    """Parametrized event bus — runs against both InMemory and Redis backends."""
+    if request.param == "memory":
+        eb = InMemoryEventBus()
+        async with eb:
+            yield eb
+    else:
+        import os
+
+        url = os.environ.get("A2AKIT_TEST_REDIS_URL")
+        if not url:
+            pytest.skip("Redis not configured (set A2AKIT_TEST_REDIS_URL)")
+
+        try:
+            from a2akit.event_bus.redis import RedisEventBus
+        except ImportError:
+            pytest.skip("redis-py not installed (pip install a2akit[redis])")
+
+        eb = RedisEventBus(url, key_prefix=f"a2akit:test:{uuid.uuid4().hex[:8]}:")
+        async with eb:
+            yield eb
+            await eb._redis.flushdb()
+
+
+@pytest.fixture(params=["memory", "redis"])
+async def cancel_registry(request):
+    """Parametrized cancel registry — runs against both backends."""
+    if request.param == "memory":
+        from a2akit.broker.memory import InMemoryCancelRegistry
+
+        yield InMemoryCancelRegistry()
+    else:
+        import os
+
+        url = os.environ.get("A2AKIT_TEST_REDIS_URL")
+        if not url:
+            pytest.skip("Redis not configured (set A2AKIT_TEST_REDIS_URL)")
+
+        try:
+            from a2akit.broker.redis import RedisCancelRegistry
+        except ImportError:
+            pytest.skip("redis-py not installed (pip install a2akit[redis])")
+
+        cr = RedisCancelRegistry(url, key_prefix=f"a2akit:test:{uuid.uuid4().hex[:8]}:")
+        yield cr
+        await cr.close()
 
 
 @pytest.fixture

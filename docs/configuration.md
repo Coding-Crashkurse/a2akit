@@ -19,6 +19,25 @@ a2akit reads settings from environment variables prefixed with `A2AKIT_`. Every 
 | `A2AKIT_PUSH_MAX_CONCURRENT` | `50` | Max concurrent webhook deliveries |
 | `A2AKIT_PUSH_ALLOW_HTTP` | `False` | Allow HTTP webhook URLs (dev only) |
 
+### Redis Settings
+
+These settings apply when using the Redis broker, event bus, or cancel registry (`pip install a2akit[redis]`).
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `A2AKIT_REDIS_URL` | `redis://localhost:6379/0` | Default Redis connection URL |
+| `A2AKIT_REDIS_KEY_PREFIX` | `a2akit:` | Key prefix for multi-tenant isolation |
+| `A2AKIT_REDIS_BROKER_STREAM` | `tasks` | Stream name for the broker queue |
+| `A2AKIT_REDIS_BROKER_GROUP` | `workers` | Consumer group name |
+| `A2AKIT_REDIS_BROKER_CONSUMER_PREFIX` | `worker` | Consumer name prefix (hostname+PID appended) |
+| `A2AKIT_REDIS_BROKER_BLOCK_MS` | `5000` | XREADGROUP block timeout (ms) |
+| `A2AKIT_REDIS_BROKER_CLAIM_TIMEOUT_MS` | `60000` | XAUTOCLAIM idle threshold (ms) |
+| `A2AKIT_REDIS_EVENT_BUS_CHANNEL_PREFIX` | `events:` | Pub/Sub channel prefix |
+| `A2AKIT_REDIS_EVENT_BUS_STREAM_PREFIX` | `eventlog:` | Replay stream prefix |
+| `A2AKIT_REDIS_EVENT_BUS_STREAM_MAXLEN` | `1000` | Max replay stream length per task |
+| `A2AKIT_REDIS_CANCEL_KEY_PREFIX` | `cancel:` | Cancel flag key prefix |
+| `A2AKIT_REDIS_CANCEL_TTL_S` | `86400` | Cancel key TTL in seconds (24h) |
+
 ## Priority
 
 Settings are resolved in this order (highest priority first):
@@ -68,6 +87,20 @@ class Settings(BaseSettings):
     broker_buffer: int = 1000
     event_buffer: int = 200
     log_level: str | None = None
+
+    # Redis
+    redis_url: str = "redis://localhost:6379/0"
+    redis_key_prefix: str = "a2akit:"
+    redis_broker_stream: str = "tasks"
+    redis_broker_group: str = "workers"
+    redis_broker_consumer_prefix: str = "worker"
+    redis_broker_block_ms: int = 5000
+    redis_broker_claim_timeout_ms: int = 60000
+    redis_event_bus_channel_prefix: str = "events:"
+    redis_event_bus_stream_prefix: str = "eventlog:"
+    redis_event_bus_stream_maxlen: int = 1000
+    redis_cancel_key_prefix: str = "cancel:"
+    redis_cancel_ttl_s: int = 86400  # 24h
 
     # Push notification settings
     push_max_retries: int = 3

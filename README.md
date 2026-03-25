@@ -19,7 +19,9 @@ pip install a2akit
 With optional extras:
 
 ```bash
+pip install a2akit[redis]       # Redis broker, event bus & cancel registry
 pip install a2akit[langgraph]   # LangGraph integration
+pip install a2akit[postgres]    # PostgreSQL storage
 pip install a2akit[otel]        # OpenTelemetry tracing & metrics
 ```
 
@@ -90,7 +92,7 @@ Open `http://localhost:8000/chat` — chat with your agent and inspect tasks in 
 - **Lifecycle hooks** — fire-and-forget callbacks on terminal state transitions
 - **Dependency injection** — shared infrastructure with automatic lifecycle management
 - **OpenTelemetry** — opt-in distributed tracing and metrics (`pip install a2akit[otel]`)
-- **Pluggable backends** — PostgreSQL, SQLite, and more (Redis, RabbitMQ coming soon)
+- **Pluggable backends** — PostgreSQL, SQLite, Redis broker/event bus/cancel registry
 - **Type-safe** — full type hints, `py.typed` marker, PEP 561 compliant
 
 📖 **[Full Documentation](https://coding-crashkurse.github.io/a2a-kit/)**

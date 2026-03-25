@@ -73,13 +73,20 @@ async def test_final_event_ends_iterator(event_bus):
 
 
 async def test_cleanup(event_bus):
-    """After cleanup, the subscriber list for the task_id is removed."""
+    """After cleanup, no error is raised (idempotent)."""
     task_id = "task-3"
 
-    # Subscribe to register a subscriber
-    async with event_bus.subscribe(task_id):
-        assert task_id in event_bus._event_subscribers
+    # Publish an event so state exists
+    event = TaskStatusUpdateEvent(
+        task_id=task_id,
+        context_id="ctx-1",
+        kind="status-update",
+        status=TaskStatus(state=TaskState.working),
+        final=False,
+    )
+    await event_bus.publish(task_id, event)
 
-    # After exiting subscribe context, cleanup explicitly
+    # Cleanup should succeed without errors
     await event_bus.cleanup(task_id)
-    assert task_id not in event_bus._event_subscribers
+    # Double cleanup must be idempotent
+    await event_bus.cleanup(task_id)

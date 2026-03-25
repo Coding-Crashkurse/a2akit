@@ -115,3 +115,4 @@ nav:
     - Push Notifications: examples/push-notifications.md
     - Authenticated Card: examples/authenticated-card.md
     - LangGraph Worker: examples/langgraph-worker.md
+    - Redis + LangGraph: examples/redis-langgraph.md

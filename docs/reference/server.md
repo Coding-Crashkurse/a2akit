@@ -40,9 +40,9 @@ server = A2AServer(
 | `agent_card` | `AgentCardConfig` | *required* | Agent discovery card configuration |
 | `middlewares` | `list[A2AMiddleware]` | `[]` | Middleware pipeline |
 | `storage` | `str \| Storage` | `"memory"` | Storage backend (`"memory"`, connection string, or instance) |
-| `broker` | `str \| Broker` | `"memory"` | Broker backend (`"memory"` or instance) |
-| `event_bus` | `str \| EventBus` | `"memory"` | Event bus backend (`"memory"` or instance) |
-| `cancel_registry` | `CancelRegistry \| None` | `None` | Cancel registry (auto-created if None) |
+| `broker` | `str \| Broker` | `"memory"` | Broker backend (`"memory"`, `"redis://..."`, or instance) |
+| `event_bus` | `str \| EventBus` | `"memory"` | Event bus backend (`"memory"`, `"redis://..."`, or instance) |
+| `cancel_registry` | `CancelRegistry \| None` | `None` | Cancel registry (auto-created; uses Redis when broker is Redis) |
 | `blocking_timeout_s` | `float \| None` | `None` | Timeout for `message:send` blocking (falls back to Settings) |
 | `cancel_force_timeout_s` | `float \| None` | `None` | Force-cancel timeout (falls back to Settings) |
 | `max_concurrent_tasks` | `int \| None` | `None` | Worker parallelism limit |
@@ -66,6 +66,46 @@ The `storage` parameter accepts:
 - `"postgresql+asyncpg://..."` — `PostgreSQLStorage` (requires `a2akit[postgres]`)
 - `"sqlite+aiosqlite:///..."` — `SQLiteStorage` (requires `a2akit[sqlite]`)
 - A `Storage` instance — used directly
+
+### Broker Backend Resolution
+
+The `broker` parameter accepts:
+
+- `"memory"` — `InMemoryBroker` (default)
+- `"redis://..."` / `"rediss://..."` — `RedisBroker` (requires `a2akit[redis]`)
+- A `Broker` instance — used directly
+
+### Event Bus Backend Resolution
+
+The `event_bus` parameter accepts:
+
+- `"memory"` — `InMemoryEventBus` (default)
+- `"redis://..."` / `"rediss://..."` — `RedisEventBus` (requires `a2akit[redis]`)
+- An `EventBus` instance — used directly
+
+### Cancel Registry Resolution
+
+The `cancel_registry` parameter accepts:
+
+- `None` (default) — auto-created: `RedisCancelRegistry` when broker is a Redis URL, `InMemoryCancelRegistry` otherwise
+- A `CancelRegistry` instance — used directly
+
+### Multi-Process Production Setup
+
+For horizontally scalable deployments, use Redis for broker + event bus and PostgreSQL for storage:
+
+```python
+server = A2AServer(
+    worker=MyWorker(),
+    agent_card=AgentCardConfig(...),
+    broker="redis://redis:6379/0",
+    event_bus="redis://redis:6379/0",
+    storage="postgresql+asyncpg://user:pass@db:5432/mydb",
+)
+```
+
+!!! warning "Storage + Broker consistency"
+    Redis Broker + InMemoryStorage is **not recommended** for multi-process deployments because tasks created on one process won't be visible to another. Use PostgreSQL or SQLite storage when using Redis broker.
 
 ### `as_fastapi_app(**fastapi_kwargs)`
 

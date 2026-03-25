@@ -1,0 +1,58 @@
+# docker-compose.yml — Full-stack a2akit with Redis + Postgres + LangGraph
+#
+# Start:  docker compose up --build
+# Stop:   docker compose down -v
+# UI:     http://localhost:8000/chat
+
+services:
+  # ── Infrastructure ──────────────────────────────────────────
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 2s
+      retries: 10
+    volumes:
+      - redis-data:/data
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: a2akit
+      POSTGRES_PASSWORD: a2akit
+      POSTGRES_DB: a2akit
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U a2akit"]
+      interval: 3s
+      timeout: 2s
+      retries: 10
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+
+  # ── Agent Server (2 replicas behind shared Redis broker) ────
+
+  agent:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      DATABASE_URL: postgresql+asyncpg://a2akit:a2akit@postgres:5432/a2akit
+      UVICORN_WORKERS: "2"
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    # Scale to N replicas: docker compose up --build --scale agent=3
+    # (Only the first replica binds port 8000; use a load balancer for multiple)
+
+volumes:
+  redis-data:
+  pg-data:

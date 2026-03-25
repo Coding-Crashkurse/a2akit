@@ -222,7 +222,16 @@ class A2AServer:
             return self._broker_spec
         if self._broker_spec == "memory":
             return InMemoryBroker(settings=self._settings)
-        msg = f"Unknown broker backend: {self._broker_spec!r}. Use 'memory' or pass a Broker instance."
+        if isinstance(self._broker_spec, str) and self._broker_spec.startswith(
+            ("redis://", "rediss://")
+        ):
+            from a2akit.broker.redis import RedisBroker
+
+            return RedisBroker(self._broker_spec, settings=self._settings)
+        msg = (
+            f"Unknown broker backend: {self._broker_spec!r}. "
+            "Use 'memory', a Redis URL ('redis://...'), or pass a Broker instance."
+        )
         raise ValueError(msg)
 
     def _build_event_bus(self) -> EventBus:
@@ -231,8 +240,29 @@ class A2AServer:
             return self._event_bus_spec
         if self._event_bus_spec == "memory":
             return InMemoryEventBus(settings=self._settings)
-        msg = f"Unknown event bus backend: {self._event_bus_spec!r}. Use 'memory' or pass an EventBus instance."
+        if isinstance(self._event_bus_spec, str) and self._event_bus_spec.startswith(
+            ("redis://", "rediss://")
+        ):
+            from a2akit.event_bus.redis import RedisEventBus
+
+            return RedisEventBus(self._event_bus_spec, settings=self._settings)
+        msg = (
+            f"Unknown event bus backend: {self._event_bus_spec!r}. "
+            "Use 'memory', a Redis URL ('redis://...'), or pass an EventBus instance."
+        )
         raise ValueError(msg)
+
+    def _build_cancel_registry(self) -> CancelRegistry:
+        """Resolve the cancel registry, defaulting to Redis when broker is Redis."""
+        if self._cancel_registry is not None:
+            return self._cancel_registry
+        if isinstance(self._broker_spec, str) and self._broker_spec.startswith(
+            ("redis://", "rediss://")
+        ):
+            from a2akit.broker.redis import RedisCancelRegistry
+
+            return RedisCancelRegistry(self._broker_spec, settings=self._settings)
+        return InMemoryCancelRegistry()
 
     def as_fastapi_app(self, *, debug: bool = False, **fastapi_kwargs: Any) -> FastAPI:
         """Create a fully configured FastAPI application."""
@@ -244,7 +274,7 @@ class A2AServer:
             storage = server._build_storage()
             broker = server._build_broker()
             event_bus = server._build_event_bus()
-            cancel_registry = server._cancel_registry or InMemoryCancelRegistry()
+            cancel_registry = server._build_cancel_registry()
             base_emitter = DefaultEventEmitter(event_bus, storage)
             emitter: EventEmitter = (
                 HookableEmitter(base_emitter, server._hooks) if server._hooks else base_emitter

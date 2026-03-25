@@ -4,6 +4,40 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.0.18] — 2026-03-25
+
+### Added
+- **Redis Broker** (`RedisBroker`) — Redis Streams-backed task queue with consumer
+  groups, automatic stale-message recovery via `XAUTOCLAIM`, dead-letter queue,
+  and configurable retry semantics. Drop-in replacement for `InMemoryBroker`.
+- **Redis EventBus** (`RedisEventBus`) — Pub/Sub for live fan-out + Streams for
+  replay buffer. Supports `Last-Event-ID` based reconnection with gap-fill pattern.
+  Drop-in replacement for `InMemoryEventBus`.
+- **Redis CancelRegistry** (`RedisCancelRegistry`) — SET keys for durability +
+  Pub/Sub channels for real-time notification. `RedisCancelScope` blocks on
+  Pub/Sub instead of polling. Drop-in replacement for `InMemoryCancelRegistry`.
+- **Connection string activation** — pass `broker="redis://..."` and
+  `event_bus="redis://..."` to `A2AServer`. Cancel registry auto-creates from
+  broker URL when not explicitly provided.
+- **Shared connection pool** — when broker and event bus use the same Redis URL,
+  pass an explicit `ConnectionPool` to avoid 3x connections.
+- **`redis_task_lock_factory`** — convenience distributed lock for task-level
+  serialization across multiple consumers.
+- **`pip install a2akit[redis]`** — new optional dependency group
+  (`redis[hiredis]>=5.0.0`).
+- **12 new Redis settings** in `Settings` — `redis_url`, `redis_key_prefix`,
+  `redis_broker_stream`, `redis_broker_group`, `redis_broker_block_ms`,
+  `redis_broker_claim_timeout_ms`, `redis_event_bus_channel_prefix`,
+  `redis_event_bus_stream_prefix`, `redis_event_bus_stream_maxlen`,
+  `redis_cancel_key_prefix`, `redis_cancel_ttl_s`, and more.
+- **Parametrized test fixtures** — `broker`, `event_bus`, and `cancel_registry`
+  fixtures now run against both InMemory and Redis backends (Redis tests skip
+  when `A2AKIT_TEST_REDIS_URL` is not set).
+- **Redis-specific test suites** — `test_redis_broker.py`,
+  `test_redis_event_bus.py`, `test_redis_cancel_registry.py`.
+- **`examples/redis_langgraph/`** — full Docker Compose example with Redis +
+  PostgreSQL + LangGraph research pipeline agent.
+
 ## [0.0.17] — 2026-03-22
 
 ### Added

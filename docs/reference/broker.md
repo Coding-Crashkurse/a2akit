@@ -39,6 +39,49 @@ server = A2AServer(
 )
 ```
 
+## RedisBroker
+
+Redis Streams-backed broker for horizontally scalable, multi-process deployments. Uses a single consumer group so each message is delivered to exactly one consumer. Stale messages from dead consumers are periodically reclaimed via `XAUTOCLAIM`.
+
+```python
+from a2akit import A2AServer
+
+server = A2AServer(
+    worker=MyWorker(),
+    agent_card=AgentCardConfig(...),
+    broker="redis://localhost:6379/0",
+)
+```
+
+Or with an explicit instance for advanced configuration:
+
+```python
+from a2akit.broker.redis import RedisBroker
+
+broker = RedisBroker(
+    "redis://localhost:6379/0",
+    stream_name="my-tasks",
+    group_name="my-workers",
+    block_ms=5000,
+    claim_timeout_ms=60000,
+)
+
+server = A2AServer(worker=MyWorker(), agent_card=..., broker=broker)
+```
+
+Requires `pip install a2akit[redis]`.
+
+### RedisCancelRegistry
+
+When you pass a Redis URL as `broker`, the cancel registry is automatically created as `RedisCancelRegistry` (unless you explicitly provide one). It uses SET keys for durability + Pub/Sub channels for real-time notification.
+
+```python
+from a2akit.broker.redis import RedisCancelRegistry
+
+cancel_registry = RedisCancelRegistry("redis://localhost:6379/0", ttl_s=86400)
+server = A2AServer(..., cancel_registry=cancel_registry)
+```
+
 ## OperationHandle
 
 Handle for acknowledging or rejecting a broker operation.

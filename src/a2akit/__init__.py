@@ -54,6 +54,25 @@ from a2akit.task_manager import TaskManager
 from a2akit.telemetry import OTEL_ENABLED
 from a2akit.worker import FileInfo, TaskContext, Worker
 
+
+def __getattr__(name: str) -> object:
+    """Lazy-load Redis implementations to avoid hard dependency on redis-py."""
+    _redis_names = {"RedisBroker", "RedisCancelRegistry", "RedisEventBus"}
+    if name in _redis_names:
+        if name in ("RedisBroker", "RedisCancelRegistry"):
+            from a2akit.broker.redis import RedisBroker, RedisCancelRegistry
+
+            globals()["RedisBroker"] = RedisBroker
+            globals()["RedisCancelRegistry"] = RedisCancelRegistry
+        if name == "RedisEventBus":
+            from a2akit.event_bus.redis import RedisEventBus
+
+            globals()["RedisEventBus"] = RedisEventBus
+        return globals()[name]
+    msg = f"module {__name__!r} has no attribute {name!r}"
+    raise AttributeError(msg)
+
+
 __all__ = [
     "OTEL_ENABLED",
     "A2AClient",
@@ -92,6 +111,9 @@ __all__ = [
     "PushConfigStore",
     "PushNotificationAuthenticationInfo",
     "PushNotificationConfig",
+    "RedisBroker",
+    "RedisCancelRegistry",
+    "RedisEventBus",
     "RequestEnvelope",
     "Settings",
     "SignatureConfig",
