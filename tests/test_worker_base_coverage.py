@@ -426,9 +426,6 @@ async def test_update_context_no_context_id():
         await event_bus.__aexit__(None, None, None)
 
 
-# --- Write-batching tests ---
-
-
 async def test_artifacts_buffered_not_written_immediately():
     """Chunks within flush interval stay in buffer, no DB write."""
     ctx, storage, event_bus, task = await _make_ctx()

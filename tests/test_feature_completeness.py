@@ -23,8 +23,6 @@ from a2akit.event_bus.memory import InMemoryEventBus
 from a2akit.storage.base import TERMINAL_STATES
 from conftest import EchoWorker, StreamingWorker, _make_app
 
-# ─── Helpers ────────────────────────────────────────────────────────────
-
 
 def _send_body(
     text: str = "hello",
@@ -122,9 +120,6 @@ def _make_custom_app(worker: Worker, **kwargs: Any):
     return server.as_fastapi_app()
 
 
-# ─── REQ-01: Message field passthrough ──────────────────────────────────
-
-
 async def test_reference_task_ids_passthrough():
     """referenceTaskIds on a message survives round-trip through tasks/get."""
     app = _make_app(EchoWorker())
@@ -181,9 +176,6 @@ async def test_ctx_reference_task_ids_property():
             assert any("urn:x" in str(a) for a in artifacts)
 
 
-# ─── REQ-02: Artifact extensions passthrough ────────────────────────────
-
-
 async def test_artifact_extensions_passthrough():
     """Artifact emitted with extensions has them in the response."""
     app = _make_custom_app(ArtifactExtensionWorker())
@@ -198,9 +190,6 @@ async def test_artifact_extensions_passthrough():
             assert len(artifacts) >= 1
             art = artifacts[0]
             assert art.get("extensions") == ["urn:example:v1"]
-
-
-# ─── REQ-03: Input mode validation ──────────────────────────────────────
 
 
 async def test_input_mode_rejects_incompatible_type():
@@ -316,9 +305,6 @@ async def test_input_mode_file_part_defaults_to_octet_stream():
             assert r.json().get("data", {}).get("mimeType") == "application/octet-stream"
 
 
-# ─── REQ-03 JSON-RPC transport ──────────────────────────────────────────
-
-
 async def test_input_mode_rejects_incompatible_type_jsonrpc():
     """JSON-RPC transport returns -32005 for incompatible input modes."""
     server = A2AServer(
@@ -356,9 +342,6 @@ async def test_input_mode_rejects_incompatible_type_jsonrpc():
             assert data["error"]["code"] == -32005
 
 
-# ─── REQ-04: InvalidAgentResponseError ──────────────────────────────────
-
-
 def test_invalid_agent_response_error_class():
     """Exception class exists with correct attributes."""
     err = InvalidAgentResponseError("bad structure")
@@ -371,9 +354,6 @@ def test_content_type_not_supported_error_class():
     err = ContentTypeNotSupportedError("image/png")
     assert err.mime_type == "image/png"
     assert "image/png" in str(err)
-
-
-# ─── REQ-05: TaskState.Unknown ──────────────────────────────────────────
 
 
 def test_unknown_state_not_terminal():
@@ -396,9 +376,6 @@ def test_client_result_unknown_state():
     result = ClientResult.from_task(task)
     assert result.state == "unknown"
     assert result.is_terminal is False
-
-
-# ─── REQ-06: SSE Last-Event-ID replay ──────────────────────────────────
 
 
 async def test_event_bus_replay_after_id():
@@ -534,9 +511,6 @@ async def test_event_bus_publish_returns_event_id():
         assert id2 == "2"
 
 
-# ─── REQ-07: tasks/list JSON-RPC completeness ──────────────────────────
-
-
 async def test_jsonrpc_list_tasks_status_filter():
     """tasks/list via JSON-RPC filters by status."""
     server = A2AServer(
@@ -584,9 +558,6 @@ async def test_jsonrpc_list_tasks_status_filter():
             assert len(result["tasks"]) >= 1
             for t in result["tasks"]:
                 assert t["status"]["state"] == "completed"
-
-
-# ─── REQ-08: Push notification inline config on message/stream ──────────
 
 
 async def test_stream_message_registers_push_config():
@@ -647,9 +618,6 @@ async def test_stream_message_registers_push_config():
         await agen.aclose()
 
 
-# ─── REQ-09: A2A-Version response header ───────────────────────────────
-
-
 async def test_response_includes_a2a_version_header():
     """All A2A endpoint responses include the A2A-Version header."""
     app = _make_app(EchoWorker())
@@ -694,9 +662,6 @@ async def test_response_includes_a2a_version_header_jsonrpc():
                 },
             )
             assert r.headers.get("a2a-version") == "0.3.0"
-
-
-# ─── REQ-10: Discriminator field consistency (kind fields) ──────────────
 
 
 async def test_task_response_has_kind_task():
@@ -793,9 +758,6 @@ async def test_tasks_get_has_kind_task():
             task_id = r.json()["id"]
             r2 = await c.get(f"/v1/tasks/{task_id}")
             assert r2.json().get("kind") == "task"
-
-
-# ─── REQ-10 via JSON-RPC ───────────────────────────────────────────────
 
 
 async def test_jsonrpc_task_has_kind():

@@ -36,11 +36,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------------------
-# Serialization helpers
-# ---------------------------------------------------------------------------
-
-
 def _serialize_event(event: StreamEvent) -> str:
     """Serialize a StreamEvent to JSON."""
     if isinstance(event, DirectReply):
@@ -84,11 +79,6 @@ def _deserialize_event(data: str) -> StreamEvent:
 def _is_final(event: StreamEvent) -> bool:
     """Check if an event signals the end of the stream."""
     return isinstance(event, TaskStatusUpdateEvent) and event.final
-
-
-# ---------------------------------------------------------------------------
-# RedisEventBus
-# ---------------------------------------------------------------------------
 
 
 class RedisEventBus(EventBus):

@@ -24,10 +24,6 @@ from a2a.types import (
 
 from a2akit.config import Settings
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
 
 def _params(text: str = "hello") -> MessageSendParams:
     msg = Message(
@@ -47,11 +43,6 @@ def _status_event(task_id: str = "t1", *, final: bool = False) -> TaskStatusUpda
         status=TaskStatus(state=state),
         final=final,
     )
-
-
-# ---------------------------------------------------------------------------
-# Broker serialization
-# ---------------------------------------------------------------------------
 
 
 class TestBrokerSerialization:
@@ -95,11 +86,6 @@ class TestBrokerSerialization:
         assert "params" in raw
         assert raw["is_new_task"] is True
         assert raw["request_context"] == {"k": "v"}
-
-
-# ---------------------------------------------------------------------------
-# EventBus serialization
-# ---------------------------------------------------------------------------
 
 
 class TestEventBusSerialization:
@@ -185,11 +171,6 @@ class TestEventBusSerialization:
         assert _is_final(msg) is False
 
 
-# ---------------------------------------------------------------------------
-# RedisOperationHandle
-# ---------------------------------------------------------------------------
-
-
 class TestRedisOperationHandle:
     """Test ack/nack logic with mocked Redis."""
 
@@ -253,11 +234,6 @@ class TestRedisOperationHandle:
         mock_redis.xack.assert_awaited_once()
 
 
-# ---------------------------------------------------------------------------
-# RedisBroker construction
-# ---------------------------------------------------------------------------
-
-
 class TestRedisBrokerConstruction:
     """Test RedisBroker init and configuration."""
 
@@ -311,11 +287,6 @@ class TestRedisBrokerConstruction:
         assert broker._shutdown_flag is True
 
 
-# ---------------------------------------------------------------------------
-# RedisEventBus construction
-# ---------------------------------------------------------------------------
-
-
 class TestRedisEventBusConstruction:
     """Test RedisEventBus init and configuration."""
 
@@ -345,11 +316,6 @@ class TestRedisEventBusConstruction:
         )
         assert eb._url == "redis://override:6379/0"
         assert eb._stream_maxlen == 100
-
-
-# ---------------------------------------------------------------------------
-# RedisCancelRegistry construction
-# ---------------------------------------------------------------------------
 
 
 class TestRedisCancelRegistryConstruction:
@@ -428,11 +394,6 @@ class TestRedisCancelRegistryConstruction:
         assert mock_redis.delete.await_count == 2
 
 
-# ---------------------------------------------------------------------------
-# RedisCancelScope
-# ---------------------------------------------------------------------------
-
-
 class TestRedisCancelScope:
     """Test RedisCancelScope with mocked Redis."""
 
@@ -490,11 +451,6 @@ class TestRedisCancelScope:
         await scope._start()  # Second call should be no-op
         # exists should only be called once
         assert mock_redis.exists.await_count == 1
-
-
-# ---------------------------------------------------------------------------
-# Server factory methods
-# ---------------------------------------------------------------------------
 
 
 class TestServerFactoryMethods:
@@ -618,11 +574,6 @@ class TestServerFactoryMethods:
         assert isinstance(broker, RedisBroker)
 
 
-# ---------------------------------------------------------------------------
-# Lazy __init__.py imports
-# ---------------------------------------------------------------------------
-
-
 class TestLazyImports:
     """Test that lazy __getattr__ in __init__.py works."""
 
@@ -648,11 +599,6 @@ class TestLazyImports:
     def test_event_bus_unknown_attr_raises(self):
         with pytest.raises((AttributeError, ImportError)):
             from a2akit.event_bus import NonExistentThing  # noqa: F401
-
-
-# ---------------------------------------------------------------------------
-# redis_task_lock_factory
-# ---------------------------------------------------------------------------
 
 
 class TestRedisTaskLockFactory:

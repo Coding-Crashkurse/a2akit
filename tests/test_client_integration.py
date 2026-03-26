@@ -127,9 +127,6 @@ async def direct_reply_client(request):
     await manager.__aexit__(None, None, None)
 
 
-# ── Connection tests ──────────────────────────────────────────────────
-
-
 class TestConnect:
     async def test_connect_context_manager(self):
         app = _make_app(EchoWorker())
@@ -189,9 +186,6 @@ class TestConnect:
         await http.aclose()
 
 
-# ── Send tests ────────────────────────────────────────────────────────
-
-
 class TestSend:
     async def test_send_echo(self, echo_client):
         result = await echo_client.send("hello")
@@ -222,9 +216,6 @@ class TestSend:
     async def test_send_with_metadata(self, echo_client):
         result = await echo_client.send("hi", metadata={"key": "val"})
         assert result.completed
-
-
-# ── Stream tests ──────────────────────────────────────────────────────
 
 
 class TestStream:
@@ -264,9 +255,6 @@ class TestStream:
         await manager.__aexit__(None, None, None)
 
 
-# ── Task management tests ────────────────────────────────────────────
-
-
 class TestTasks:
     async def test_get_task_exists(self, echo_client):
         result = await echo_client.send("hello")
@@ -288,9 +276,6 @@ class TestTasks:
             await echo_client.cancel("nonexistent-task-id")
 
 
-# ── Multi-turn tests ─────────────────────────────────────────────────
-
-
 class TestMultiTurn:
     async def test_input_required_follow_up(self, input_client):
         result = await input_client.send("Book a flight")
@@ -305,17 +290,11 @@ class TestMultiTurn:
         assert "Got follow-up" in (result2.text or "")
 
 
-# ── Direct reply tests ───────────────────────────────────────────────
-
-
 class TestDirectReply:
     async def test_direct_reply_returns_message(self, direct_reply_client):
         result = await direct_reply_client.send("hi")
         assert result.text is not None
         assert "Direct: hi" in result.text
-
-
-# ── Protocol detection tests ─────────────────────────────────────────
 
 
 class TestProtocolDetect:

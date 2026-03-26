@@ -28,11 +28,6 @@ def _status_msg(text: str) -> Message:
     )
 
 
-# ---------------------------------------------------------------------------
-# CapabilitiesConfig / AgentCard tests
-# ---------------------------------------------------------------------------
-
-
 def test_capability_default_false():
     """Default: state_transition_history is False."""
     caps = CapabilitiesConfig()
@@ -62,11 +57,6 @@ def test_capability_default_false_in_agent_card():
     config = AgentCardConfig(name="Test", description="Test", protocol="http+json")
     card = build_agent_card(config, "http://localhost:8000")
     assert card.capabilities.state_transition_history is False
-
-
-# ---------------------------------------------------------------------------
-# InMemoryStorage transition recording
-# ---------------------------------------------------------------------------
 
 
 async def test_transitions_recorded_in_memory(storage):
@@ -126,11 +116,6 @@ async def test_transitions_survive_task_metadata_merge(storage):
     assert [t["state"] for t in transitions] == ["submitted", "working", "completed"]
 
 
-# ---------------------------------------------------------------------------
-# SQL Storage transition recording
-# ---------------------------------------------------------------------------
-
-
 async def test_transitions_recorded_in_sql(sql_storage):
     """SQL storage records state transitions in metadata."""
     task = await sql_storage.create_task("ctx-1", _msg())
@@ -170,11 +155,6 @@ async def test_sql_transitions_survive_metadata_merge(sql_storage):
     transitions = loaded.metadata["stateTransitions"]
     assert len(transitions) == 3
     assert [t["state"] for t in transitions] == ["submitted", "working", "completed"]
-
-
-# ---------------------------------------------------------------------------
-# E2E HTTP tests
-# ---------------------------------------------------------------------------
 
 
 @pytest.fixture

@@ -20,9 +20,6 @@ import asyncio
 
 from a2akit import A2AClient
 
-# ── Validator 1: name allowlist ──────────────────────────────────────
-
-
 TRUSTED = {"Signed Echo Agent", "Internal Router"}
 
 
@@ -32,16 +29,10 @@ def check_allowlist(card, raw_body):
         raise ValueError(f"Untrusted agent: {card.name}")
 
 
-# ── Validator 2: provider domain ─────────────────────────────────────
-
-
 def check_provider(card, raw_body):
     """Require the agent's provider URL to contain a given domain."""
     if card.provider is None or "example.com" not in card.provider.url:
         raise ValueError("Agent must be provided by example.com")
-
-
-# ── Validator 3: signature presence ──────────────────────────────────
 
 
 def require_signatures(card, raw_body):
@@ -57,9 +48,6 @@ def require_signatures(card, raw_body):
     if not card.signatures:
         raise ValueError("Agent card has no JWS signatures")
     print(f"  Card has {len(card.signatures)} signature(s) — OK")
-
-
-# ── Main ─────────────────────────────────────────────────────────────
 
 
 async def main() -> None:

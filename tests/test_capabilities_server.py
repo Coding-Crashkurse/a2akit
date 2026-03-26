@@ -55,9 +55,6 @@ def _rpc(method, params=None, req_id=1):
     return body
 
 
-# ── REST (http+json) tests ────────────────────────────────────────────
-
-
 class TestRestStreamRejected:
     async def test_stream_endpoint_rejected_when_disabled(self):
         """POST /v1/message:stream returns error when streaming disabled."""
@@ -98,9 +95,6 @@ class TestRestStreamRejected:
                 assert len(raw) > 0
 
 
-# ── JSON-RPC tests ───────────────────────────────────────────────────
-
-
 class TestJsonRpcStreamRejected:
     async def test_stream_rejected_when_disabled(self):
         """message/sendStream returns error when streaming disabled."""
@@ -132,9 +126,6 @@ class TestJsonRpcStreamRejected:
                 params = _send_body("hello")
                 resp = await client.post("/", json=_rpc("message/sendStream", params))
                 assert resp.status_code == 200
-
-
-# ── Agent card capability reflection ──────────────────────────────────
 
 
 class TestAgentCardCapabilities:

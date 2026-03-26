@@ -16,10 +16,6 @@ from a2akit import (
 )
 from a2akit.agent_card import build_agent_card
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
 
 class _EchoWorker(Worker):
     async def handle(self, ctx: TaskContext) -> None:
@@ -52,11 +48,6 @@ def _make_extensions_app(extensions: list[ExtensionConfig] | None = None):
         ),
     )
     return server.as_fastapi_app()
-
-
-# ---------------------------------------------------------------------------
-# Unit tests — no HTTP, no lifespan
-# ---------------------------------------------------------------------------
 
 
 def test_extensions_config_accepted():
@@ -138,11 +129,6 @@ def test_build_agent_card_without_extensions():
     card = build_agent_card(config, "http://localhost:8000")
     assert card.capabilities is not None
     assert card.capabilities.extensions is None
-
-
-# ---------------------------------------------------------------------------
-# Integration tests — HTTP round-trip
-# ---------------------------------------------------------------------------
 
 
 async def test_extensions_visible_in_agent_card_http():

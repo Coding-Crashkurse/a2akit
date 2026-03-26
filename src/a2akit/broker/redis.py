@@ -38,11 +38,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------------------
-# Serialization helpers
-# ---------------------------------------------------------------------------
-
-
 def _serialize_operation(
     params: MessageSendParams,
     *,
@@ -71,11 +66,6 @@ def _deserialize_operation(fields: dict[bytes, bytes]) -> _RunTask:
         is_new_task=raw.get("is_new_task", False),
         request_context=raw.get("request_context", {}),
     )
-
-
-# ---------------------------------------------------------------------------
-# RedisCancelScope
-# ---------------------------------------------------------------------------
 
 
 class RedisCancelScope(CancelScope):
@@ -163,11 +153,6 @@ class RedisCancelScope(CancelScope):
         return self._event.is_set()
 
 
-# ---------------------------------------------------------------------------
-# RedisCancelRegistry
-# ---------------------------------------------------------------------------
-
-
 class RedisCancelRegistry(CancelRegistry):
     """Redis-backed cancel registry using SET keys + Pub/Sub notifications."""
 
@@ -230,11 +215,6 @@ class RedisCancelRegistry(CancelRegistry):
 
         if self._owns_connection:
             await self._redis.aclose()
-
-
-# ---------------------------------------------------------------------------
-# RedisOperationHandle
-# ---------------------------------------------------------------------------
 
 
 class RedisOperationHandle(OperationHandle):
@@ -308,11 +288,6 @@ class RedisOperationHandle(OperationHandle):
                 {b"op": self._serialized_op, b"attempt": str(next_attempt).encode()},
             )
             await pipe.execute()
-
-
-# ---------------------------------------------------------------------------
-# RedisBroker
-# ---------------------------------------------------------------------------
 
 
 class RedisBroker(Broker):
@@ -518,11 +493,6 @@ class RedisBroker(Broker):
         except aioredis.ResponseError:
             # Stream or group doesn't exist yet — nothing to claim
             pass
-
-
-# ---------------------------------------------------------------------------
-# Convenience: Redis-backed task lock factory
-# ---------------------------------------------------------------------------
 
 
 def redis_task_lock_factory(

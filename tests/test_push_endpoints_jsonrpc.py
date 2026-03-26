@@ -86,9 +86,6 @@ async def _create_task(client):
     return data["result"]["id"]
 
 
-# --- Capability gating ---
-
-
 async def test_set_returns_error_when_disabled(no_push_client):
     resp = await no_push_client.post(
         "/",
@@ -130,9 +127,6 @@ async def test_delete_returns_error_when_disabled(no_push_client):
         ),
     )
     assert resp.json()["error"]["code"] == -32003
-
-
-# --- Happy path ---
 
 
 async def test_set_config(push_client):
@@ -253,9 +247,6 @@ async def test_delete_config(push_client):
         "/", json=_rpc("tasks/pushNotificationConfig/list", {"id": task_id})
     )
     assert resp.json()["result"] == []
-
-
-# --- Error cases ---
 
 
 async def test_set_missing_task_id(push_client):

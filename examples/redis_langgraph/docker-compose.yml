@@ -5,8 +5,6 @@
 # UI:     http://localhost:8000/chat
 
 services:
-  # ── Infrastructure ──────────────────────────────────────────
-
   redis:
     image: redis:7-alpine
     ports:
@@ -35,10 +33,10 @@ services:
     volumes:
       - pg-data:/var/lib/postgresql/data
 
-  # ── Agent Server (2 replicas behind shared Redis broker) ────
-
   agent:
-    build: .
+    build:
+      context: ../..
+      dockerfile: examples/redis_langgraph/Dockerfile
     ports:
       - "8000:8000"
     environment:

@@ -50,11 +50,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------------------
-# Content-Type validation middleware (Spec §3.2 MUST)
-# ---------------------------------------------------------------------------
-
-
 class ContentTypeValidationMiddleware(BaseHTTPMiddleware):
     """Reject requests without ``application/json`` Content-Type (Spec §3.2)."""
 
@@ -93,11 +88,6 @@ class ContentTypeValidationMiddleware(BaseHTTPMiddleware):
                 )
         response: Response = await call_next(request)
         return response
-
-
-# ---------------------------------------------------------------------------
-# A2AServer
-# ---------------------------------------------------------------------------
 
 
 class A2AServer:

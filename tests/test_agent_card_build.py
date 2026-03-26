@@ -50,9 +50,6 @@ async def test_external_base_url_forwarded():
     assert url == "https://api.example.com"
 
 
-# --- Provider ---
-
-
 async def test_build_card_with_provider():
     config = AgentCardConfig(
         name="P",
@@ -71,9 +68,6 @@ async def test_build_card_without_provider():
     assert card.provider is None
 
 
-# --- icon_url / documentation_url ---
-
-
 async def test_build_card_with_icon_url():
     config = AgentCardConfig(name="I", description="d", icon_url="https://example.com/icon.png")
     card = build_agent_card(config, "http://localhost:8000")
@@ -86,9 +80,6 @@ async def test_build_card_with_documentation_url():
     )
     card = build_agent_card(config, "http://localhost:8000")
     assert card.documentation_url == "https://docs.example.com"
-
-
-# --- security_schemes / security ---
 
 
 async def test_build_card_with_security_schemes():
@@ -113,9 +104,6 @@ async def test_build_card_with_security():
     assert card.security == [{"bearer": []}]
 
 
-# --- signatures ---
-
-
 async def test_build_card_with_signatures():
     sig = SignatureConfig(protected="eyJhbGciOiJSUzI1NiJ9", signature="abc123")
     config = AgentCardConfig(name="Sig", description="d", signatures=[sig])
@@ -137,9 +125,6 @@ async def test_build_card_with_signatures_and_header():
     card = build_agent_card(config, "http://localhost:8000")
     assert card.signatures is not None
     assert card.signatures[0].header == {"kid": "key-1"}
-
-
-# --- all new fields combined ---
 
 
 async def test_build_card_all_new_fields():
@@ -189,9 +174,6 @@ async def test_build_card_defaults_unchanged():
     assert card.security_schemes is None
     assert card.security is None
     assert card.signatures is None
-
-
-# --- Skill input_modes / output_modes ---
 
 
 async def test_skill_with_input_output_modes():

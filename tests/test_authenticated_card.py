@@ -55,9 +55,6 @@ def _make_app(*, with_provider: bool = True, protocol: str = "http+json"):
     return server.as_fastapi_app()
 
 
-# --- REST tests ---
-
-
 class TestRestExtendedCard:
     async def test_get_extended_card_success(self):
         app = _make_app(with_provider=True)
@@ -100,9 +97,6 @@ class TestRestExtendedCard:
                 assert card.get("supportsAuthenticatedExtendedCard") in (None, False)
 
 
-# --- JSON-RPC tests ---
-
-
 class TestJsonRpcExtendedCard:
     def _rpc(self, method, params=None):
         body = {"jsonrpc": "2.0", "id": str(uuid.uuid4()), "method": method}
@@ -131,9 +125,6 @@ class TestJsonRpcExtendedCard:
                 assert data["error"]["code"] == -32007
 
 
-# --- Client integration tests ---
-
-
 class TestClientExtendedCard:
     async def test_client_get_extended_card_rest(self):
         app = _make_app(with_provider=True, protocol="http+json")
@@ -157,9 +148,6 @@ class TestClientExtendedCard:
             await http.aclose()
 
 
-# --- AgentCardConfig field tests ---
-
-
 class TestAgentCardConfigFlag:
     def test_default_false(self):
         cfg = AgentCardConfig(name="X", description="X", version="0.1.0")
@@ -173,9 +161,6 @@ class TestAgentCardConfigFlag:
             supports_authenticated_extended_card=True,
         )
         assert cfg.supports_authenticated_extended_card is True
-
-
-# --- CapabilitiesConfig validator relaxed ---
 
 
 class TestCapabilitiesConfigRelaxed:

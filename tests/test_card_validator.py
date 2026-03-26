@@ -38,9 +38,6 @@ async def server_http():
         await http.aclose()
 
 
-# ── Tests ────────────────────────────────────────────────────────────
-
-
 class TestCardValidator:
     async def test_no_validator_default(self, server_http):
         """Client without card_validator connects normally."""

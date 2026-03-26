@@ -73,9 +73,6 @@ async def no_push_client(no_push_app):
         yield c
 
 
-# --- Capability gating ---
-
-
 async def test_set_config_returns_501_when_disabled(no_push_client):
     resp = await no_push_client.post(
         "/v1/tasks/task-1/pushNotificationConfigs",
@@ -97,9 +94,6 @@ async def test_list_configs_returns_501_when_disabled(no_push_client):
 async def test_delete_config_returns_501_when_disabled(no_push_client):
     resp = await no_push_client.delete("/v1/tasks/task-1/pushNotificationConfigs/cfg-1")
     assert resp.status_code == 501
-
-
-# --- Happy path ---
 
 
 async def test_set_config_creates_config(push_client):
@@ -189,9 +183,6 @@ async def test_delete_config_removes(push_client):
     assert resp.json() == []
 
 
-# --- Error cases ---
-
-
 async def test_set_config_task_not_found(push_client):
     resp = await push_client.post(
         "/v1/tasks/nonexistent/pushNotificationConfigs",
@@ -214,9 +205,6 @@ async def test_delete_config_not_found(push_client):
 
     resp = await push_client.delete(f"/v1/tasks/{task_id}/pushNotificationConfigs/nonexistent")
     assert resp.status_code == 404
-
-
-# --- Agent card reflects push_notifications ---
 
 
 async def test_agent_card_shows_push_enabled(push_client):

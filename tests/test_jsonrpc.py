@@ -115,9 +115,6 @@ def _rpc(method, params=None, req_id=1):
     return body
 
 
-# ── Envelope validation ──────────────────────────────────────────────
-
-
 class TestEnvelopeValidation:
     async def test_invalid_json(self, jrpc_client):
         resp = await jrpc_client.post(
@@ -146,9 +143,6 @@ class TestEnvelopeValidation:
         resp = await jrpc_client.post("/", json={"jsonrpc": "2.0", "id": 1, "method": 123})
         data = resp.json()
         assert data["error"]["code"] == -32600
-
-
-# ── message/send ─────────────────────────────────────────────────────
 
 
 class TestMessageSend:
@@ -196,9 +190,6 @@ class TestMessageSend:
         assert not any(k.startswith("_") for k in metadata)
 
 
-# ── tasks/get ────────────────────────────────────────────────────────
-
-
 class TestTasksGet:
     async def test_get_existing(self, jrpc_client):
         # Create a task first
@@ -234,9 +225,6 @@ class TestTasksGet:
         assert data["error"]["code"] == -32602
 
 
-# ── tasks/cancel ─────────────────────────────────────────────────────
-
-
 class TestTasksCancel:
     async def test_cancel_nonexistent(self, jrpc_client):
         resp = await jrpc_client.post("/", json=_rpc("tasks/cancel", {"id": "nonexistent"}))
@@ -268,9 +256,6 @@ class TestTasksCancel:
         assert "result" in data
         # cancel_task returns current state; cancellation happens asynchronously
         assert "error" not in data
-
-
-# ── tasks/list ────────────────────────────────────────────────────────
 
 
 class TestTasksList:
@@ -318,9 +303,6 @@ class TestTasksList:
         assert "result" in data
 
 
-# ── message/sendStream ───────────────────────────────────────────────
-
-
 class TestMessageSendStream:
     async def test_stream_returns_sse(self, jrpc_streaming_client):
         params = _send_params("hello world")
@@ -347,9 +329,6 @@ class TestMessageSendStream:
         assert data["error"]["code"] == -32602
 
 
-# ── Push notification stubs ──────────────────────────────────────────
-
-
 class TestPushNotificationStubs:
     @pytest.mark.parametrize(
         "method",
@@ -366,18 +345,12 @@ class TestPushNotificationStubs:
         assert data["error"]["code"] == -32003
 
 
-# ── Health ────────────────────────────────────────────────────────────
-
-
 class TestHealth:
     async def test_health(self, jrpc_client):
         resp = await jrpc_client.post("/", json=_rpc("health", {}))
         data = resp.json()
         assert "result" in data
         assert data["result"]["status"] == "ok"
-
-
-# ── Multi-turn ───────────────────────────────────────────────────────
 
 
 class TestMultiTurn:
@@ -397,9 +370,6 @@ class TestMultiTurn:
         assert result2["status"]["state"] == "completed"
 
 
-# ── Agent card discovery ─────────────────────────────────────────────
-
-
 class TestAgentCardDiscovery:
     async def test_agent_card_url_points_to_root(self, jrpc_client):
         resp = await jrpc_client.get("/.well-known/agent-card.json")
@@ -407,9 +377,6 @@ class TestAgentCardDiscovery:
         card = resp.json()
         # jsonrpc protocol → url should be the root, not /v1
         assert not card["url"].endswith("/v1")
-
-
-# ── Version header ───────────────────────────────────────────────────
 
 
 class TestVersionHeader:
@@ -430,9 +397,6 @@ class TestVersionHeader:
             headers={"A2A-Version": "1.0"},
         )
         assert resp.status_code == 400
-
-
-# ── Protocol configuration ───────────────────────────────────────────
 
 
 class TestProtocolConfig:

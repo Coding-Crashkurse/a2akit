@@ -35,21 +35,12 @@ from a2akit import (
     TaskContext,
     Worker,
 )
-from a2akit.hooks import LifecycleHooks
-
-# ---------------------------------------------------------------------------
-# Configuration from environment
-# ---------------------------------------------------------------------------
 
 REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
 DATABASE_URL = os.environ.get(
     "DATABASE_URL",
     "postgresql+asyncpg://a2akit:a2akit@localhost/a2akit",
 )
-
-# ---------------------------------------------------------------------------
-# LangGraph pipeline — research -> analyze -> summarize
-# ---------------------------------------------------------------------------
 
 SIMULATED_SOURCES = [
     {
@@ -181,10 +172,6 @@ graph = (
     .compile()
 )
 
-# ---------------------------------------------------------------------------
-# A2A Worker — bridges LangGraph stream events to A2A SSE
-# ---------------------------------------------------------------------------
-
 
 class ResearchWorker(Worker):
     """Maps LangGraph custom stream events to A2A streaming primitives."""
@@ -245,35 +232,6 @@ class ResearchWorker(Worker):
             await ctx.fail("Pipeline finished without producing a summary")
 
 
-# ---------------------------------------------------------------------------
-# Lifecycle hooks — observability
-# ---------------------------------------------------------------------------
-
-
-async def on_working(task_id: str) -> None:
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] > Task {task_id[:8]}... started")
-
-
-async def on_terminal(task_id, state, message) -> None:
-    msg_text = ""
-    if message and message.parts:
-        for part in message.parts:
-            root = getattr(part, "root", part)
-            if hasattr(root, "text") and root.text:
-                msg_text = root.text[:80]
-                break
-    print(
-        f"[{datetime.now().strftime('%H:%M:%S')}] # Task {task_id[:8]}... -> {state.value}"
-        f"{' -- ' + msg_text if msg_text else ''}"
-    )
-
-
-hooks = LifecycleHooks(on_working=on_working, on_terminal=on_terminal)
-
-# ---------------------------------------------------------------------------
-# Server assembly
-# ---------------------------------------------------------------------------
-
 server = A2AServer(
     worker=ResearchWorker(),
     agent_card=AgentCardConfig(
@@ -306,12 +264,9 @@ server = A2AServer(
     broker=REDIS_URL,
     event_bus=REDIS_URL,
     storage=DATABASE_URL,
-    hooks=hooks,
     max_concurrent_tasks=10,
     blocking_timeout_s=120,
 )
-
-# -- FastAPI app with built-in debug UI at /chat --
 
 app = server.as_fastapi_app(debug=True)
 
