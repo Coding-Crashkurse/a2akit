@@ -108,6 +108,7 @@ class Settings(BaseSettings):
     push_timeout: float = 10.0
     push_max_concurrent: int = 50
     push_allow_http: bool = False
+    push_idle_timeout: float = 300.0
 ```
 
 The `Settings` class uses [pydantic-settings](https://docs.pydantic.dev/latest/concepts/pydantic_settings/) for automatic environment variable binding.
@@ -126,6 +127,7 @@ These constructor parameters override Settings values:
 | `push_timeout` | `push_timeout` | Webhook HTTP timeout |
 | `push_max_concurrent` | `push_max_concurrent` | Concurrent delivery limit |
 | `push_allow_http` | `push_allow_http` | Allow HTTP webhook URLs |
+| `push_idle_timeout` | `push_idle_timeout` | Idle timeout for delivery queues |
 | `push_allowed_hosts` | — | Hostname allowlist (constructor only) |
 | `push_blocked_hosts` | — | Hostname blocklist (constructor only) |
 

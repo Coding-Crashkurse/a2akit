@@ -115,6 +115,7 @@ Pass these to `A2AServer()`:
 | `push_timeout` | `10.0` | HTTP timeout for webhook delivery |
 | `push_max_concurrent` | `50` | Max concurrent webhook deliveries |
 | `push_allow_http` | `False` | Allow HTTP (non-HTTPS) URLs (dev only!) |
+| `push_idle_timeout` | `300.0` | Idle timeout (seconds) for delivery queue workers |
 | `push_allowed_hosts` | `None` | Allowlist of webhook hostnames |
 | `push_blocked_hosts` | `None` | Blocklist of webhook hostnames |
 
@@ -127,6 +128,7 @@ Pass these to `A2AServer()`:
 | `A2AKIT_PUSH_TIMEOUT` | `10.0` | Webhook HTTP timeout (seconds) |
 | `A2AKIT_PUSH_MAX_CONCURRENT` | `50` | Max concurrent deliveries |
 | `A2AKIT_PUSH_ALLOW_HTTP` | `False` | Allow HTTP URLs |
+| `A2AKIT_PUSH_IDLE_TIMEOUT` | `300.0` | Idle timeout for delivery queues (seconds) |
 
 ## Webhook Security
 

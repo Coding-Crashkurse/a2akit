@@ -168,7 +168,7 @@ See the [Configuration](../configuration.md) page for the complete list.
 
 ## Production Checklist
 
-- [ ] Use PostgreSQL or SQLite (file-based) storage — not `InMemoryStorage`
+- [ ] Use Redis, PostgreSQL, or SQLite storage — not `InMemoryStorage`
 - [ ] Use Redis for broker, event bus, and cancel registry
 - [ ] Run multiple Uvicorn workers (`--workers N`)
 - [ ] Put a reverse proxy in front (nginx, Caddy, or cloud LB)

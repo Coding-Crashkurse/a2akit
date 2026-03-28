@@ -10,6 +10,90 @@
 
 Build Agent-to-Agent agents with streaming, cancellation, multi-turn conversations, push notifications, pluggable backends (Memory, SQLite, PostgreSQL, Redis), OpenTelemetry, and a built-in debug UI — all on top of FastAPI.
 
+## Why a2akit?
+
+The [official A2A Python SDK](https://github.com/a2aproject/a2a-python) gives you protocol primitives — but you have to wire everything yourself. You need to understand `AgentExecutor`, `RequestContext`, `EventQueue`, `TaskUpdater`, `TaskState`, `Part`, `TextPart`, `SendMessageRequest`, task creation, event routing, and more. A minimal agent easily becomes 50+ lines of boilerplate:
+
+<details>
+<summary><b>Official SDK — Currency Agent (simplified)</b></summary>
+
+```python
+from a2a.server.agent_execution import AgentExecutor, RequestContext
+from a2a.server.events import EventQueue
+from a2a.server.tasks import TaskUpdater
+from a2a.types import InternalError, InvalidParamsError, Part, TaskState, TextPart, UnsupportedOperationError
+from a2a.utils import new_agent_text_message, new_task
+from a2a.utils.errors import ServerError
+
+class CurrencyAgentExecutor(AgentExecutor):
+    def __init__(self):
+        self.agent = CurrencyAgent()
+
+    async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:
+        query = context.get_user_input()
+        task = context.current_task
+        if not task:
+            task = new_task(context.message)
+            await event_queue.enqueue_event(task)
+        updater = TaskUpdater(event_queue, task.id, task.context_id)
+        try:
+            async for item in self.agent.stream(query, task.context_id):
+                if not item["is_task_complete"] and not item["require_user_input"]:
+                    await updater.update_status(
+                        TaskState.working,
+                        new_agent_text_message(item["content"], task.context_id, task.id),
+                    )
+                elif item["require_user_input"]:
+                    await updater.update_status(
+                        TaskState.input_required,
+                        new_agent_text_message(item["content"], task.context_id, task.id),
+                        final=True,
+                    )
+                    break
+                else:
+                    await updater.add_artifact(
+                        [Part(root=TextPart(text=item["content"]))], name="conversion_result"
+                    )
+                    await updater.complete()
+                    break
+        except Exception as e:
+            raise ServerError(error=InternalError()) from e
+
+    async def cancel(self, context: RequestContext, event_queue: EventQueue) -> None:
+        raise ServerError(error=UnsupportedOperationError())
+```
+
+</details>
+
+**With a2akit, the same logic is just this:**
+
+```python
+from a2akit import Worker, TaskContext
+
+class CurrencyWorker(Worker):
+    async def handle(self, ctx: TaskContext) -> None:
+        async for item in my_agent.stream(ctx.user_text, ctx.task_id):
+            if item["require_user_input"]:
+                await ctx.request_input(item["content"])
+            elif item["is_task_complete"]:
+                await ctx.complete(item["content"])
+            else:
+                await ctx.send_status(item["content"])
+```
+
+**The difference:** a2akit handles task creation, event routing, state machines, error wrapping, SSE streaming, and protocol compliance for you. You write your agent logic — the framework handles the protocol.
+
+| | Official SDK | a2akit |
+|---|---|---|
+| **Boilerplate** | Manage `EventQueue`, `TaskUpdater`, `TaskState`, `Part` objects manually | `ctx.complete()`, `ctx.send_status()`, `ctx.request_input()` |
+| **Task lifecycle** | Create tasks, track state, wire events yourself | Automatic — framework manages the full lifecycle |
+| **Streaming** | Manual SSE + event queue plumbing | Built-in, one method call |
+| **Storage** | Bring your own | Memory, SQLite, PostgreSQL, Redis out of the box |
+| **Cancellation** | Implement yourself | Cooperative + force-cancel with timeout |
+| **Push notifications** | Implement yourself | Built-in with anti-SSRF and retries |
+| **Debug UI** | None | Built-in browser UI at `/chat` |
+| **Middleware** | Implement yourself | Pluggable pipeline (auth, validation, etc.) |
+
 ## Install
 
 ```bash

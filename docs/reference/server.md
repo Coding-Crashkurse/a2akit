@@ -54,6 +54,7 @@ server = A2AServer(
 | `push_timeout` | `float \| None` | `None` | Webhook HTTP timeout in seconds |
 | `push_max_concurrent` | `int \| None` | `None` | Max concurrent webhook deliveries |
 | `push_allow_http` | `bool \| None` | `None` | Allow HTTP webhook URLs (dev only) |
+| `push_idle_timeout` | `float \| None` | `None` | Idle timeout for delivery queue workers (seconds) |
 | `push_allowed_hosts` | `set[str] \| None` | `None` | Hostname allowlist for webhooks |
 | `push_blocked_hosts` | `set[str] \| None` | `None` | Hostname blocklist for webhooks |
 | `extended_card_provider` | `Callable[[Request], Awaitable[AgentCardConfig]] \| None` | `None` | Callback that returns a richer card for authenticated callers. When set, `supportsAuthenticatedExtendedCard` is automatically `True` |
@@ -63,6 +64,7 @@ server = A2AServer(
 The `storage` parameter accepts:
 
 - `"memory"` — `InMemoryStorage` (default)
+- `"redis://..."` / `"rediss://..."` — `RedisStorage` (requires `a2akit[redis]`)
 - `"postgresql+asyncpg://..."` — `PostgreSQLStorage` (requires `a2akit[postgres]`)
 - `"sqlite+aiosqlite:///..."` — `SQLiteStorage` (requires `a2akit[sqlite]`)
 - A `Storage` instance — used directly
@@ -105,7 +107,7 @@ server = A2AServer(
 ```
 
 !!! warning "Storage + Broker consistency"
-    Redis Broker + InMemoryStorage is **not recommended** for multi-process deployments because tasks created on one process won't be visible to another. Use PostgreSQL or SQLite storage when using Redis broker.
+    Redis Broker + InMemoryStorage is **not recommended** for multi-process deployments because tasks created on one process won't be visible to another. Use Redis, PostgreSQL, or SQLite storage when using Redis broker.
 
 ### `as_fastapi_app(**fastapi_kwargs)`
 

@@ -4,6 +4,22 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.0.21] — 2026-03-28
+
+### Added
+- **Redis storage backend** — new `RedisStorage` using Redis Hashes for tasks,
+  Sets for context indexes, and Lua scripts for atomic OCC + terminal-state guards.
+  Auto-detected when passing a `redis://` URL to the `storage` parameter.
+  Install with `pip install a2akit[redis]`.
+- **Push delivery queue idle timeout** — delivery queue workers now exit after
+  a configurable idle timeout (default 300s) to prevent resource leaks when tasks
+  stay in non-terminal states indefinitely. Configurable via `push_idle_timeout`
+  constructor parameter or `A2AKIT_PUSH_IDLE_TIMEOUT` environment variable.
+
+### Fixed
+- **Redis CancelScope leak** — `cleanup()` now cancels listener tasks and closes
+  pubsub subscriptions for the target task_id.
+
 ## [0.0.20] — 2026-03-28
 
 ### Added

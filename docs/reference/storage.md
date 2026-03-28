@@ -61,7 +61,26 @@ server = A2AServer(
 ```
 
 !!! warning "Not for production"
-    `InMemoryStorage` loses all data on restart and doesn't support multi-process deployments. Use PostgreSQL or SQLite for production.
+    `InMemoryStorage` loses all data on restart and doesn't support multi-process deployments. Use PostgreSQL, SQLite, or Redis for production.
+
+## RedisStorage
+
+Persistent storage using Redis Hashes with Lua scripts for atomic OCC and terminal-state guards.
+
+```bash
+pip install a2akit[redis]
+```
+
+```python
+server = A2AServer(
+    worker=MyWorker(),
+    agent_card=AgentCardConfig(...),
+    storage="redis://localhost:6379/0",
+)
+```
+
+!!! tip "All-Redis deployment"
+    When using Redis for broker, event bus, and storage, you can share the same Redis URL for all three — each component uses distinct key prefixes.
 
 ## PostgreSQLStorage
 
