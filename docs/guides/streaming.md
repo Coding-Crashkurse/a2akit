@@ -39,7 +39,7 @@ server = A2AServer(
 app = server.as_fastapi_app()
 ```
 
-1. `send_status()` emits an intermediate status update. When a message is provided, it's persisted in `task.status.message` so polling clients also see it.
+1. `send_status()` emits an intermediate status update. When a message is provided, it's persisted in `task.status.message` so polling clients also see it. In deferred-storage mode (streaming clients), the DB write is skipped — see [Deferred Storage](#deferred-storage-v0019) below.
 2. All chunks with the same `artifact_id` belong to the same artifact.
 3. `append=True` means this chunk extends the existing artifact rather than replacing it.
 4. `last_chunk=True` signals that this artifact is complete.
@@ -130,3 +130,17 @@ await ctx.emit_artifact(
 
 !!! warning "Always call a lifecycle method"
     Streaming methods (`send_status`, `emit_text_artifact`, etc.) do **not** end the task. You must still call `ctx.complete()`, `ctx.fail()`, or another lifecycle method when done.
+
+## Deferred Storage (v0.0.19+)
+
+When a client uses `POST /v1/message:stream`, intermediate DB writes are automatically deferred. SSE subscribers receive every chunk in real-time via the EventBus, so periodic storage flushes are unnecessary overhead.
+
+| Client endpoint | DB write strategy |
+|-----------------|-------------------|
+| `POST /v1/message:stream` (SSE) | **Deferred** — 1 atomic write at terminal state |
+| `POST /v1/message:send` (blocking) | **Eager** — periodic flushes so polling clients see progress |
+
+This is fully transparent to worker code — `emit_artifact()`, `send_status()`, and lifecycle methods work identically in both modes. The terminal method (`complete`, `fail`, `reject`, etc.) always persists the full state including all buffered artifacts.
+
+!!! tip "Performance impact"
+    A streaming task with 50 chunks drops from ~7–9 DB writes to exactly 1. For PostgreSQL, this also avoids repeated read-modify-write cycles on the JSON columns.

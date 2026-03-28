@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import uuid
 from typing import TYPE_CHECKING, Any
 
@@ -101,7 +100,7 @@ class JsonRpcTransport(Transport):
 
     async def send_message(self, params: MessageSendParams) -> Task | Message:
         """JSON-RPC message/send."""
-        body = json.loads(params.model_dump_json(by_alias=True, exclude_none=True))
+        body = params.model_dump(mode="json", by_alias=True, exclude_none=True)
         result = await self._call("message/send", body)
         kind = result.get("kind") if isinstance(result, dict) else None
         if kind == "message":
@@ -110,7 +109,7 @@ class JsonRpcTransport(Transport):
 
     async def stream_message(self, params: MessageSendParams) -> AsyncIterator[StreamEvent]:
         """JSON-RPC message/sendStream (SSE response)."""
-        body = json.loads(params.model_dump_json(by_alias=True, exclude_none=True))
+        body = params.model_dump(mode="json", by_alias=True, exclude_none=True)
         envelope = self._envelope("message/sendStream", body)
         async with self._http.stream(
             "POST",

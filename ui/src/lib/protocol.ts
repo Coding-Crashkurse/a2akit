@@ -1,7 +1,7 @@
 import type { AgentCard, Part, Task } from "./types";
 
 export function isJsonRpc(card: AgentCard): boolean {
-  return card.preferredTransport === "jsonrpc";
+  return card.preferredTransport?.toLowerCase() === "jsonrpc";
 }
 
 export function isStreaming(card: AgentCard): boolean {

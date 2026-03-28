@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from typing import TYPE_CHECKING, Any
 
 from a2akit.push.models import PushNotificationConfig, TaskPushNotificationConfig
@@ -22,7 +21,7 @@ class PushConfigNotFoundError(Exception):
 
 def _serialize_tpnc(tpnc: TaskPushNotificationConfig) -> dict[str, Any]:
     """Serialize a TaskPushNotificationConfig to a JSON-compatible dict."""
-    return json.loads(tpnc.model_dump_json(by_alias=True, exclude_none=True))  # type: ignore[no-any-return]
+    return tpnc.model_dump(mode="json", by_alias=True, exclude_none=True)
 
 
 async def handle_set_config(

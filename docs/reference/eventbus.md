@@ -84,16 +84,18 @@ Requires `pip install a2akit[redis]`.
 
 ### Dual-Write Architecture
 
-Each `publish()` call:
+Each `publish()` call uses a **Redis pipeline** (single roundtrip):
 
 1. **XADD** to a per-task replay stream (bounded by `stream_maxlen`)
-2. **PUBLISH** to a per-task Pub/Sub channel (live subscribers)
+2. **PUBLISH** a lightweight wakeup signal (`"1"`) to a per-task Pub/Sub channel
+
+The Pub/Sub message contains no payload — live subscribers read new entries from the stream via `XRANGE` after receiving the wakeup. This avoids double serialization and halves per-event bandwidth compared to embedding the full payload in the Pub/Sub message.
 
 On `subscribe(after_event_id=...)`:
 
 1. **Replay** — `XRANGE` from the stream after the given ID
 2. **Gap-fill** — re-check for events published between replay and Pub/Sub subscribe
-3. **Live** — async iterate over Pub/Sub messages
+3. **Live** — wait for Pub/Sub wakeup, then `XRANGE` for new stream entries
 
 This ensures zero event loss even during reconnection.
 

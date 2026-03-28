@@ -133,28 +133,29 @@ class RedisEventBus(EventBus):
             await self._redis.aclose()
 
     async def publish(self, task_id: str, event: StreamEvent) -> str | None:
-        """Dual-write: XADD to replay stream + PUBLISH to Pub/Sub channel."""
+        """Dual-write: XADD to replay stream + PUBLISH wakeup to Pub/Sub channel.
+
+        Uses a Redis pipeline to combine XADD + PUBLISH into a single
+        roundtrip.  The Pub/Sub message is a lightweight wakeup signal
+        ("1"); live subscribers read the actual payload via XREAD from
+        the stream, avoiding double serialization.
+        """
         assert self._redis is not None
         serialized = _serialize_event(event)
         stream_key = f"{self._stream_prefix}{task_id}"
         channel = f"{self._channel_prefix}{task_id}"
 
-        # 1. Append to replay stream
-        event_id = await self._redis.xadd(
-            stream_key,
-            {"data": serialized},
-            maxlen=self._stream_maxlen,
-            approximate=True,
-        )
+        async with self._redis.pipeline(transaction=False) as pipe:
+            pipe.xadd(
+                stream_key,
+                {"data": serialized},
+                maxlen=self._stream_maxlen,
+                approximate=True,
+            )
+            pipe.publish(channel, "1")
+            results = await pipe.execute()
 
-        # 2. Publish to live subscribers
-        # Decode event_id if bytes
-        eid = event_id.decode() if isinstance(event_id, bytes) else event_id
-        await self._redis.publish(
-            channel,
-            json.dumps({"event_id": eid, "data": serialized}),
-        )
-
+        eid = results[0].decode() if isinstance(results[0], bytes) else results[0]
         return eid
 
     @asynccontextmanager
@@ -223,27 +224,29 @@ class RedisEventBus(EventBus):
             if _is_final(event):
                 return
 
-        # Phase 3: Live Pub/Sub
+        # Phase 3: Live — Pub/Sub wakeup + XREAD for actual data
         while True:
             message = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
             if message is None:
                 continue
             if message["type"] != "message":
                 continue
+            # Wakeup received — read new entries from the stream
             try:
-                payload = json.loads(message["data"])
-                event_id = payload["event_id"]
-                # Deduplicate: skip events we've already seen
-                if event_id <= last_seen_id:
-                    continue
-                last_seen_id = event_id
-                event = _deserialize_event(payload["data"])
+                entries = await self._redis.xrange(stream_key, min=f"({last_seen_id}", max="+")
+                for entry_id, fields in entries:
+                    eid = entry_id.decode() if isinstance(entry_id, bytes) else entry_id
+                    if eid <= last_seen_id:
+                        continue
+                    last_seen_id = eid
+                    data = fields.get(b"data", b"").decode()
+                    event = _deserialize_event(data)
+                    yield event
+                    if _is_final(event):
+                        return
             except Exception:
-                logger.exception("Failed to deserialize live event")
+                logger.exception("Failed to read live events from stream")
                 continue
-            yield event
-            if _is_final(event):
-                return
 
     async def cleanup(self, task_id: str) -> None:
         """Delete the replay stream for a completed task."""

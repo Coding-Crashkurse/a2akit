@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "a2akit"
-version = "0.0.18"
+version = "0.0.19"
 description = "A2A agent framework in one import."
 readme = "README.md"
 license = "MIT"
@@ -69,6 +69,9 @@ dev = [
     "opentelemetry-api>=1.20.0",
     "opentelemetry-sdk>=1.20.0",
 ]
+
+[tool.hatch.build]
+artifacts = ["src/a2akit/_static/*.html"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/a2akit"]

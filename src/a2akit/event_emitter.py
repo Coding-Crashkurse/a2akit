@@ -64,6 +64,18 @@ class DefaultEventEmitter(EventEmitter):
 
     Storage write is authoritative. EventBus failure is logged but not raised,
     providing at-least-once delivery semantics for Storage and best-effort for EventBus.
+
+    **Delivery guarantees:**
+
+    - *Normal operation:* Live subscribers see every event immediately.
+      Reconnecting SSE clients replay missed events via ``Last-Event-ID``.
+    - *EventBus publish failure:* The event is **not** in the live stream
+      or replay buffer.  Live and reconnecting SSE subscribers will miss it.
+      Storage still holds the correct task state — clients should fall back
+      to ``tasks/get`` polling when the EventBus is unavailable.
+    - *Why no retry:* Retrying with back-off inside ``send_event`` would
+      block the worker for every streaming chunk, adding visible latency
+      for all clients.  The current log-and-swallow strategy is intentional.
     """
 
     def __init__(self, event_bus: EventBus, storage: Storage) -> None:
@@ -93,7 +105,12 @@ class DefaultEventEmitter(EventEmitter):
         )
 
     async def send_event(self, task_id: str, event: StreamEvent) -> None:
-        """Broadcast a stream event via event bus (best-effort)."""
+        """Broadcast a stream event via event bus (best-effort).
+
+        Exceptions from the event bus are logged but **not** re-raised so
+        the worker is never blocked by a transient EventBus failure.  The
+        task state in Storage remains authoritative.
+        """
         try:
             await self._event_bus.publish(task_id, event)
         except Exception:

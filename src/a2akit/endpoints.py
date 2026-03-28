@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 from collections.abc import AsyncIterable
 from typing import TYPE_CHECKING, Any
@@ -220,7 +219,7 @@ def build_a2a_router() -> APIRouter:
         if isinstance(result, Task):
             result = _sanitize_task_for_client(result)
         return JSONResponse(
-            content=json.loads(result.model_dump_json(by_alias=True, exclude_none=True))
+            content=result.model_dump(mode="json", by_alias=True, exclude_none=True)
         )
 
     @router.post("/v1/message:stream", response_class=EventSourceResponse, tags=["Messages"])
@@ -263,9 +262,7 @@ def build_a2a_router() -> APIRouter:
                 status_code=404, detail={"code": -32001, "message": "Task not found"}
             )
         t = _sanitize_task_for_client(t)
-        return JSONResponse(
-            content=json.loads(t.model_dump_json(by_alias=True, exclude_none=True))
-        )
+        return JSONResponse(content=t.model_dump(mode="json", by_alias=True, exclude_none=True))
 
     @router.get("/v1/tasks", tags=["Tasks"])
     async def tasks_list(
@@ -292,7 +289,7 @@ def build_a2a_router() -> APIRouter:
         result = await tm.list_tasks(query)
         result.tasks = [_sanitize_task_for_client(t) for t in result.tasks]
         return JSONResponse(
-            content=json.loads(result.model_dump_json(by_alias=True, exclude_none=True))
+            content=result.model_dump(mode="json", by_alias=True, exclude_none=True)
         )
 
     @router.post("/v1/tasks/{task_id}:cancel", tags=["Tasks"])
@@ -306,7 +303,7 @@ def build_a2a_router() -> APIRouter:
             result = await tm.cancel_task(task_id)
             result = _sanitize_task_for_client(result)
             return JSONResponse(
-                content=json.loads(result.model_dump_json(by_alias=True, exclude_none=True))
+                content=result.model_dump(mode="json", by_alias=True, exclude_none=True)
             )
         except TaskNotFoundError as err:
             raise HTTPException(
@@ -417,9 +414,7 @@ def build_a2a_router() -> APIRouter:
             request.url.netloc,
         )
         card = build_agent_card(extended_config, base_url)
-        return JSONResponse(
-            content=json.loads(card.model_dump_json(by_alias=True, exclude_none=True))
-        )
+        return JSONResponse(content=card.model_dump(mode="json", by_alias=True, exclude_none=True))
 
     @router.get("/v1/health", tags=["Health"])
     async def health_check() -> dict[str, str]:
@@ -446,8 +441,6 @@ def build_discovery_router(
             request.url.netloc,
         )
         card = build_agent_card(card_config, base_url, additional_protocols)
-        return JSONResponse(
-            content=json.loads(card.model_dump_json(by_alias=True, exclude_none=True))
-        )
+        return JSONResponse(content=card.model_dump(mode="json", by_alias=True, exclude_none=True))
 
     return router

@@ -116,7 +116,7 @@ class SQLStorageBase(Storage[ContextT]):
     @staticmethod
     def _serialize_messages(msgs: list[Message]) -> str:
         return json.dumps(
-            [json.loads(m.model_dump_json(by_alias=True, exclude_none=True)) for m in msgs]
+            [m.model_dump(mode="json", by_alias=True, exclude_none=True) for m in msgs]
         )
 
     @staticmethod
@@ -127,7 +127,7 @@ class SQLStorageBase(Storage[ContextT]):
     @staticmethod
     def _serialize_artifacts(artifacts: list[Artifact]) -> str:
         return json.dumps(
-            [json.loads(a.model_dump_json(by_alias=True, exclude_none=True)) for a in artifacts]
+            [a.model_dump(mode="json", by_alias=True, exclude_none=True) for a in artifacts]
         )
 
     @staticmethod
@@ -252,7 +252,8 @@ class SQLStorageBase(Storage[ContextT]):
             if expected_version is not None and row.version != expected_version:
                 raise ConcurrencyError(
                     f"Version mismatch for task {task_id}: "
-                    f"expected {expected_version}, current {row.version}"
+                    f"expected {expected_version}, current {row.version}",
+                    current_version=row.version,
                 )
 
             if state is not None and row.status_state in {s.value for s in TERMINAL_STATES}:

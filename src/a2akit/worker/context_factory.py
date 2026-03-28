@@ -44,6 +44,7 @@ class ContextFactory:
         is_new_task: bool = False,
         request_context: dict[str, Any] | None = None,
         configuration: MessageSendConfiguration | None = None,
+        deferred_storage: bool = False,
     ) -> TaskContextImpl:
         """Construct a TaskContextImpl from a broker message."""
         user_text = self._extract_text(message.parts)
@@ -79,6 +80,7 @@ class ContextFactory:
             request_context=request_context,
             deps=self._deps,
             accepted_output_modes=accepted,
+            deferred_storage=deferred_storage,
         )
         # REQ-01: Extract message-level fields for worker access.
         ctx._reference_task_ids = list(message.reference_task_ids or [])

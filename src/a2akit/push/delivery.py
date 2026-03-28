@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 from typing import TYPE_CHECKING
 
@@ -150,7 +149,7 @@ class WebhookDeliveryService:
 
         assert self._http_client is not None
         headers = _build_headers(pnc)
-        payload = json.loads(task.model_dump_json(by_alias=True, exclude_none=True))
+        payload = task.model_dump(mode="json", by_alias=True, exclude_none=True)
 
         async with self._semaphore:
             for attempt in range(1, self._max_retries + 1):

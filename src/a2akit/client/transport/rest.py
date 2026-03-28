@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from typing import TYPE_CHECKING, Any
 
 from a2a.types import AgentCard, Message, MessageSendParams, Task
@@ -81,7 +80,7 @@ class RestTransport(Transport):
 
     async def send_message(self, params: MessageSendParams) -> Task | Message:
         """POST /v1/message:send."""
-        body = json.loads(params.model_dump_json(by_alias=True, exclude_none=True))
+        body = params.model_dump(mode="json", by_alias=True, exclude_none=True)
         response = await self._http.post(
             self._url("/message:send"),
             json=body,
@@ -97,7 +96,7 @@ class RestTransport(Transport):
 
     async def stream_message(self, params: MessageSendParams) -> AsyncIterator[StreamEvent]:
         """POST /v1/message:stream (SSE)."""
-        body = json.loads(params.model_dump_json(by_alias=True, exclude_none=True))
+        body = params.model_dump(mode="json", by_alias=True, exclude_none=True)
         async with self._http.stream(
             "POST",
             self._url("/message:stream"),

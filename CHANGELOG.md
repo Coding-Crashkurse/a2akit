@@ -4,6 +4,37 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.0.19] — 2026-03-28
+
+### Changed
+- **Deferred storage for streaming tasks** — when a client connects via
+  `POST /v1/message:stream`, intermediate DB writes (`_maybe_flush`,
+  `send_status`) are skipped entirely. SSE subscribers already receive every
+  chunk in real-time via the EventBus; only the terminal write (`complete`,
+  `fail`, etc.) persists the full state atomically.
+  Streaming a 50-chunk task now produces **1 DB write instead of ~7–9**.
+- **Redis EventBus: single-roundtrip publish** — `publish()` now pipelines
+  `XADD` + `PUBLISH` into one Redis roundtrip. The Pub/Sub message is a
+  lightweight wakeup signal; live subscribers read actual data via `XRANGE`,
+  eliminating double serialization and halving per-event bandwidth.
+- **Eliminated JSON double-serialization** — replaced 18 occurrences of
+  `json.loads(obj.model_dump_json(...))` with `obj.model_dump(mode="json", ...)`
+  across endpoints, JSON-RPC handler, storage, push delivery, and client
+  transports. Removes one full JSON string allocation + parse per call.
+- **`ConcurrencyError` carries `current_version`** — on version mismatch the
+  already-loaded row version is attached to the exception, saving a separate
+  `SELECT` on retry in both `_versioned_update` and `cancel_task_in_storage`.
+- **Debug UI loaded from static files** — `_chat_ui.py` no longer embeds HTML
+  inline; the built UI bundle is served from `_static/`.
+- **Robust server shutdown** — `A2AServer` lifespan cleanup uses `hasattr`
+  guard before deleting app state attributes, preventing `AttributeError` on
+  partial startup failures.
+- **EventEmitter docstrings** — expanded delivery-guarantee documentation for
+  `DefaultEventEmitter` and `send_event()`.
+
+### Fixed
+- **Debug UI**: `preferredTransport` comparison is now case-insensitive.
+
 ## [0.0.18] — 2026-03-25
 
 ### Added

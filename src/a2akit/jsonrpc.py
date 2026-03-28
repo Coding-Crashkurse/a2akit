@@ -67,7 +67,7 @@ def _serialize(obj: Task | Any) -> Any:
     """Serialize a pydantic model to a JSON-compatible dict."""
     if isinstance(obj, Task):
         obj = _sanitize_task_for_client(obj)
-    return json.loads(obj.model_dump_json(by_alias=True, exclude_none=True))
+    return obj.model_dump(mode="json", by_alias=True, exclude_none=True)
 
 
 def _map_exception_to_error(req_id: Any, exc: Exception) -> JSONResponse:
@@ -109,7 +109,7 @@ def _get_tm(request: Request) -> TaskManager:
     """Extract the TaskManager from app state."""
     tm: TaskManager | None = getattr(request.app.state, "task_manager", None)
     if tm is None:
-        return None  # type: ignore[return-value]
+        raise RuntimeError("TaskManager not initialized")
     return tm
 
 
@@ -302,7 +302,7 @@ async def _handle_tasks_list(
         result.tasks = [_sanitize_task_for_client(t) for t in result.tasks]
         return _result_response(
             req_id,
-            json.loads(result.model_dump_json(by_alias=True, exclude_none=True)),
+            result.model_dump(mode="json", by_alias=True, exclude_none=True),
         )
     except Exception as exc:
         return _map_exception_to_error(req_id, exc)
@@ -501,7 +501,7 @@ async def _handle_get_extended_card(
         card = build_agent_card(extended_config, base_url)
         return _result_response(
             req_id,
-            json.loads(card.model_dump_json(by_alias=True, exclude_none=True)),
+            card.model_dump(mode="json", by_alias=True, exclude_none=True),
         )
     except Exception as exc:
         return _error_response(req_id, INTERNAL_ERROR, str(exc))

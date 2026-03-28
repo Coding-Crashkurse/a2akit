@@ -131,7 +131,7 @@ Implementations MUST provide read-your-writes consistency. A `load_task()` call 
 | `TaskNotAcceptingMessagesError` | Task not in a state that accepts user input |
 | `TaskNotCancelableError` | Cancel attempted on a terminal task |
 | `ContextMismatchError` | Message contextId doesn't match task's contextId |
-| `ConcurrencyError` | Expected version doesn't match stored version |
+| `ConcurrencyError` | Expected version doesn't match stored version. Carries `current_version: int | None` from the already-loaded row to avoid extra SELECTs on retry. |
 | `UnsupportedOperationError` | Operation not supported for current task state |
 
 ## ListTasksQuery

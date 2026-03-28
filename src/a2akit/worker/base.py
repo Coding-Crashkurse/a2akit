@@ -437,6 +437,7 @@ class TaskContextImpl(TaskContext):
         request_context: dict[str, Any] | None = None,
         deps: DependencyContainer | None = None,
         accepted_output_modes: list[str] | None = None,
+        deferred_storage: bool = False,
     ) -> None:
         """Initialize the task context.
 
@@ -473,6 +474,7 @@ class TaskContextImpl(TaskContext):
         self._last_flush: float = time.monotonic()
         self._flush_interval: float = 0.5  # seconds
         self._flush_count: int = 10  # max buffered chunks before flush
+        self._deferred_storage: bool = deferred_storage
 
     def _make_agent_message(
         self, parts: list[Part], *, metadata: dict[str, Any] | None = None
@@ -511,7 +513,7 @@ class TaskContextImpl(TaskContext):
                     f"Task {task_id} reached terminal state during update"
                 ) from exc
             # Non-terminal version mismatch: retry with fresh version.
-            fresh_version = await self._storage.get_version(task_id)
+            fresh_version = exc.current_version or await self._storage.get_version(task_id)
             new_version = await self._emitter.update_task(
                 task_id, expected_version=fresh_version, **kwargs
             )
@@ -519,7 +521,7 @@ class TaskContextImpl(TaskContext):
 
     async def _maybe_flush(self) -> None:
         """Flush pending artifacts to DB if interval or count threshold exceeded."""
-        if not self._pending_artifacts:
+        if self._deferred_storage or not self._pending_artifacts:
             return
         now = time.monotonic()
         if (
@@ -813,7 +815,7 @@ class TaskContextImpl(TaskContext):
         await self._emit_status(TaskState.working, message=status_msg, final=False)
 
         # Flush pending artifacts together with the status write
-        if status_msg is not None:
+        if not self._deferred_storage and status_msg is not None:
             pending = self._pending_artifacts
             self._pending_artifacts = []
             await self._versioned_update(

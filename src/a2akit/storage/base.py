@@ -71,6 +71,10 @@ class InvalidAgentResponseError(Exception):
 class ConcurrencyError(Exception):
     """Raised when expected_version doesn't match stored version."""
 
+    def __init__(self, message: str, current_version: int | None = None) -> None:
+        super().__init__(message)
+        self.current_version = current_version
+
 
 class ListTasksQuery(BaseModel):
     """Filter and pagination parameters for listing tasks."""

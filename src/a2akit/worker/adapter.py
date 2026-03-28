@@ -248,12 +248,14 @@ class WorkerAdapter:
                         span.add_event(EVENT_CANCEL_REQUESTED)
                     return
 
+                cfg = getattr(params, "configuration", None)
                 ctx = await self._context_factory.build(
                     message,
                     cancel_event,
                     is_new_task=is_new_task,
                     request_context=request_context,
-                    configuration=getattr(params, "configuration", None),
+                    configuration=cfg,
+                    deferred_storage=cfg is not None and not getattr(cfg, "blocking", False),
                 )
 
                 try:

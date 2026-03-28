@@ -340,14 +340,18 @@ class A2AServer:
                 finally:
                     if delivery_service:
                         await delivery_service.shutdown()
-                    del app.state.task_manager
-                    del app.state.broker
-                    del app.state.storage
-                    del app.state.event_bus
-                    del app.state.push_store
-                    del app.state.middlewares
-                    del app.state.capabilities
-                    del app.state.extended_card_provider
+                    for attr in (
+                        "task_manager",
+                        "broker",
+                        "storage",
+                        "event_bus",
+                        "push_store",
+                        "middlewares",
+                        "capabilities",
+                        "extended_card_provider",
+                    ):
+                        if hasattr(app.state, attr):
+                            delattr(app.state, attr)
                     await server._deps.shutdown()
 
         fastapi_kwargs.setdefault("title", self._card_config.name)
