@@ -56,18 +56,18 @@ async def test_get_task_with_history_length(client, make_send_params):
     assert trimmed_resp.status_code == 200
     trimmed_data = trimmed_resp.json()
     trimmed_history = trimmed_data.get("history", [])
-    assert (
-        len(trimmed_history) == 0
-    ), f"Expected 0 history entries with historyLength=0, got {len(trimmed_history)}"
+    assert len(trimmed_history) == 0, (
+        f"Expected 0 history entries with historyLength=0, got {len(trimmed_history)}"
+    )
 
     # Get with historyLength=1 -- should return exactly 1 message
     one_resp = await client.get(f"/v1/tasks/{task_id}", params={"historyLength": 1})
     assert one_resp.status_code == 200
     one_data = one_resp.json()
     one_history = one_data.get("history", [])
-    assert (
-        len(one_history) == 1
-    ), f"Expected 1 history entry with historyLength=1, got {len(one_history)}"
+    assert len(one_history) == 1, (
+        f"Expected 1 history entry with historyLength=1, got {len(one_history)}"
+    )
 
 
 @pytest.mark.asyncio
@@ -128,9 +128,9 @@ async def test_list_tasks_filter_by_context(client, make_send_params):
     # All returned tasks must belong to the target context
     assert len(filter_data["tasks"]) >= 1, "Expected at least 1 task for the context"
     for t in filter_data["tasks"]:
-        assert (
-            t["contextId"] == target_context
-        ), f"Expected contextId={target_context}, got {t['contextId']}"
+        assert t["contextId"] == target_context, (
+            f"Expected contextId={target_context}, got {t['contextId']}"
+        )
 
     # The specific task we created should be in the results
     returned_ids = {t["id"] for t in filter_data["tasks"]}
