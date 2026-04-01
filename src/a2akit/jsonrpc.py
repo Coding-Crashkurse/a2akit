@@ -100,7 +100,12 @@ def _map_exception_to_error(req_id: Any, exc: Exception) -> JSONResponse:
         )
     from a2akit.errors import AuthenticationRequiredError
     from a2akit.push.endpoints import PushConfigNotFoundError
+    from a2akit.storage.base import ConcurrencyError
 
+    if isinstance(exc, ConcurrencyError):
+        return _error_response(
+            req_id, UNSUPPORTED_OPERATION, "Concurrent modification, please retry"
+        )
     if isinstance(exc, AuthenticationRequiredError):
         return _error_response(req_id, INVALID_REQUEST, f"{exc.scheme} authentication required")
     if isinstance(exc, PushConfigNotFoundError):

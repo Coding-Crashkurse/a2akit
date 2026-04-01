@@ -110,7 +110,9 @@ class TaskManager:
         """Await *coro* (broker.run_task); on failure mark the task as failed.
 
         Without this wrapper a broker error (e.g. Redis down) would leave
-        the task stuck in ``submitted`` forever.
+        the task stuck in ``submitted`` forever.  Uses storage + event_bus
+        directly (not the full emitter) to publish a final SSE event so
+        blocking and streaming subscribers see the failure immediately.
         """
         try:
             await coro
@@ -118,6 +120,19 @@ class TaskManager:
             logger.error("Broker enqueue failed for task %s, marking as failed", task_id)
             try:
                 await self.storage.update_task(task_id, state=TaskState.failed)
+                # Publish final event so SSE/blocking subscribers see the failure
+                task = await self.storage.load_task(task_id)
+                if task:
+                    await self.event_bus.publish(
+                        task_id,
+                        TaskStatusUpdateEvent(
+                            kind="status-update",
+                            task_id=task_id,
+                            context_id=task.context_id or "",
+                            status=task.status,
+                            final=True,
+                        ),
+                    )
             except Exception:
                 logger.exception("Could not mark task %s as failed after broker error", task_id)
 
@@ -139,8 +154,11 @@ class TaskManager:
             if effective not in self.input_modes:
                 raise ContentTypeNotSupportedError(effective)
 
-    async def _submit_task(self, context_id: str, message: Message) -> Task:
+    async def _submit_task(self, context_id: str, message: Message) -> tuple[Task, bool]:
         """Route, validate, and persist a user message submission.
+
+        Returns ``(task, should_enqueue)``.  ``should_enqueue`` is False
+        when a duplicate follow-up message was detected (idempotency).
 
         All business rules live here — Storage is pure CRUD.
 
@@ -153,14 +171,17 @@ class TaskManager:
         """
         self._validate_input_modes(message)
         if not message.task_id:
-            return await self.storage.create_task(
-                context_id, message, idempotency_key=message.message_id
+            return (
+                await self.storage.create_task(
+                    context_id, message, idempotency_key=message.message_id
+                ),
+                True,
             )
 
         task = await self._load_and_validate(message)
         # Idempotency: skip if this message was already appended (client retry).
         if task.history and any(m.message_id == message.message_id for m in task.history):
-            return task
+            return task, False
         # Bind message to task before persisting (message binding contract).
         # Use model_copy to avoid mutating the caller's message object.
         bound_message = message.model_copy(
@@ -180,7 +201,7 @@ class TaskManager:
         updated = await self.storage.load_task(task.id)
         if updated is None:
             raise RuntimeError(f"Task {task.id} vanished after update")
-        return updated
+        return updated, True
 
     async def _load_and_validate(self, message: Message) -> Task:
         """Load task and enforce all preconditions.
@@ -242,7 +263,17 @@ class TaskManager:
         msg = params.message
         is_new = not msg.task_id
         context_id = msg.context_id or str(uuid.uuid4())
-        task = await self._submit_task(context_id, msg)
+        task, should_enqueue = await self._submit_task(context_id, msg)
+
+        # Idempotent duplicate follow-up — return current state, don't re-enqueue
+        if not should_enqueue:
+            history_len = getattr(getattr(params, "configuration", None), "history_length", None)
+            latest = await self.storage.load_task(task.id, history_length=history_len)
+            if latest is not None:
+                reply = _find_direct_reply(latest)
+                if reply is not None:
+                    return reply
+            return latest or task
 
         # Inline push notification config (A2A spec)
         if params.configuration and hasattr(params.configuration, "push_notification_config"):
@@ -340,7 +371,7 @@ class TaskManager:
         msg = params.message
         is_new = not msg.task_id
         context_id = msg.context_id or str(uuid.uuid4())
-        task = await self._submit_task(context_id, msg)
+        task, should_enqueue = await self._submit_task(context_id, msg)
 
         # REQ-08: Inline push notification config on message/stream.
         if params.configuration and hasattr(params.configuration, "push_notification_config"):
@@ -360,6 +391,9 @@ class TaskManager:
                 task = trimmed
 
         yield (None, task)
+
+        if not should_enqueue:
+            return  # Idempotent duplicate — end stream after snapshot
 
         params = self._bind_message(params, context_id, task.id)
 

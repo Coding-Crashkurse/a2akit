@@ -23,6 +23,8 @@ _BLOCKED_RANGES = [
 
 def _is_blocked_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
     """Check whether an IP address falls into a blocked (private/loopback) range."""
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped:
+        ip = ip.ipv4_mapped
     return any(ip in blocked for blocked in _BLOCKED_RANGES)
 
 

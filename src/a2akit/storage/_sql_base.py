@@ -365,7 +365,10 @@ class SQLStorageBase(Storage[ContextT]):
             data_q = tasks_table.select()
             for cond in conditions:
                 data_q = data_q.where(cond)
-            offset = int(query.page_token) if query.page_token else 0
+            try:
+                offset = int(query.page_token) if query.page_token else 0
+            except ValueError:
+                offset = 0
             data_q = (
                 data_q.order_by(tasks_table.c.status_timestamp.desc(), tasks_table.c.id.desc())
                 .offset(offset)

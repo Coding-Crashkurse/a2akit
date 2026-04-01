@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+import httpx
 from a2a.types import AgentCard, Message, MessageSendParams, Task
 
 from a2akit.client.errors import (
@@ -18,8 +19,6 @@ from a2akit.client.transport.base import Transport
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
-
-    import httpx
 
     from a2akit.client.result import StreamEvent
 
@@ -102,6 +101,7 @@ class RestTransport(Transport):
             self._url("/message:stream"),
             json=body,
             headers=self._headers(),
+            timeout=httpx.Timeout(5.0, read=None),
         ) as response:
             if not response.is_success:
                 await response.aread()
@@ -152,6 +152,7 @@ class RestTransport(Transport):
             "POST",
             self._url(f"/tasks/{task_id}:subscribe"),
             headers=headers,
+            timeout=httpx.Timeout(5.0, read=None),
         ) as response:
             if not response.is_success:
                 await response.aread()

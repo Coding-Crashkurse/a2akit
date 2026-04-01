@@ -237,11 +237,20 @@ class RedisEventBus(EventBus):
                 return
 
         # Phase 3: Live — Pub/Sub wakeup + XREAD for actual data
+        _safety_poll_interval = 30  # Only poll stream every Nth timeout (~30s)
+        _poll_ticks = 0
         while True:
             message = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
             if message is not None and message["type"] != "message":
                 continue
-            # Wakeup or timeout — poll stream (Pub/Sub is at-most-once)
+            if message is None:
+                _poll_ticks += 1
+                if _poll_ticks < _safety_poll_interval:
+                    continue
+                _poll_ticks = 0
+            else:
+                _poll_ticks = 0
+            # Wakeup or safety poll — read stream (Pub/Sub is at-most-once)
             try:
                 entries = await self._r.xrange(stream_key, min=f"({last_seen_id}", max="+")
                 for entry_id, fields in entries:

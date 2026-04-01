@@ -329,8 +329,14 @@ class WorkerAdapter:
                         span.set_status(StatusCode.OK)
             finally:
                 with anyio.CancelScope(shield=True):
-                    await self._event_bus.cleanup(task_id)
-                    await self._cancel_registry.cleanup(task_id)
+                    try:
+                        await self._event_bus.cleanup(task_id)
+                    except Exception:
+                        logger.exception("event_bus cleanup failed for %s", task_id)
+                    try:
+                        await self._cancel_registry.cleanup(task_id)
+                    except Exception:
+                        logger.exception("cancel_registry cleanup failed for %s", task_id)
 
     @staticmethod
     async def _mark_canceled(

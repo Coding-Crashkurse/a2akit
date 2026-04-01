@@ -374,6 +374,8 @@ class A2AServer:
                             await emitter.shutdown()
                         if delivery_service:
                             await delivery_service.shutdown()
+                        if hasattr(cancel_registry, "close"):
+                            await cancel_registry.close()
                         for attr in (
                             "task_manager",
                             "broker",
@@ -495,13 +497,23 @@ def _register_exception_handlers(app: FastAPI) -> None:
             content={"code": -32602, "message": "contextId does not match task"},
         )
 
+    from a2akit.storage.base import ConcurrencyError
+
+    @app.exception_handler(ConcurrencyError)
+    async def handle_concurrency(_req: Request, _exc: ConcurrencyError) -> JSONResponse:
+        return JSONResponse(
+            status_code=409,
+            content={"code": -32004, "message": "Concurrent modification, please retry"},
+        )
+
     @app.exception_handler(TaskNotAcceptingMessagesError)
     async def handle_not_accepting(
         _req: Request, exc: TaskNotAcceptingMessagesError
     ) -> JSONResponse:
         state = getattr(exc, "state", None)
+        state_str = getattr(state, "value", str(state))
         msg = (
-            f"Task is in state {state} and does not accept messages."
+            f"Task is in state {state_str} and does not accept messages."
             if state
             else "Task does not accept messages."
         )

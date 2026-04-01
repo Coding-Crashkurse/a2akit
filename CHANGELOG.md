@@ -4,6 +4,42 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.0.24] — 2026-04-01
+
+### Fixed
+- **SSRF bypass via IPv6-mapped IPv4** — `_is_blocked_ip` now resolves
+  `::ffff:10.x.x.x` to its mapped IPv4 address before checking blocked ranges,
+  closing a webhook SSRF bypass.
+- **`_enqueue_or_fail` publishes final SSE event** — broker failures now emit a
+  `TaskStatusUpdateEvent(final=True)` via the event bus so blocking and streaming
+  subscribers see the failure immediately instead of hanging until timeout.
+- **Follow-up idempotency prevents re-enqueue** — `_submit_task` now returns a
+  `should_enqueue` flag; duplicate follow-up messages (same `messageId`) no longer
+  trigger a second broker enqueue / worker execution.
+- **Cleanup chain resilience** — `event_bus.cleanup()` and
+  `cancel_registry.cleanup()` in the worker's `finally` block are now individually
+  wrapped in `try/except` so a failure in one does not skip the other.
+- **`RedisCancelRegistry` connection leak** — `close()` is now called during
+  server shutdown, preventing a leaked Redis connection on the cancel registry.
+- **Redis idempotency key TTL** — `SET idem_key` now uses `EX 86400` (24 h) to
+  prevent unbounded growth of idempotency keys in Redis.
+- **Corrupt broker payloads moved to DLQ** — non-deserializable messages in
+  `receive_task_operations` and `_claim_stale_messages` are now written to the
+  dead-letter queue before being ACK'd, instead of vanishing silently.
+- **`ConcurrencyError` exception handler** — added to both REST (`409 Conflict`)
+  and JSON-RPC (`-32004`) so OCC conflicts return a proper error instead of 500.
+- **Enum repr in error message** — `TaskNotAcceptingMessagesError` response now
+  shows `working` instead of `TaskState.working`.
+- **Client SSE read timeout** — streaming requests (`stream_message`,
+  `subscribe_task`) now use `Timeout(5.0, read=None)` so long-running LLM
+  agents don't trigger a `ReadTimeout` between chunks.
+- **Redis EventBus safety poll throttle** — fallback XRANGE polls now fire every
+  ~30 s instead of every 1 s per subscriber, reducing idle Redis load by ~97%.
+- **Invalid `pageToken` handling** — non-numeric page tokens no longer crash with
+  `ValueError` / 500; all three storage backends now fall back to offset 0.
+- **Client `close()` resilience** — `transport.close()` failure no longer prevents
+  `http_client.aclose()` from running (nested `try/finally`).
+
 ## [0.0.23] — 2026-03-31
 
 ### Fixed

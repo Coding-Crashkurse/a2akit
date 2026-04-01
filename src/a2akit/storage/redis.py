@@ -114,7 +114,7 @@ for k, v in pairs(fields) do
 end
 redis.call('HSET', task_key, unpack(flat))
 redis.call('SADD', ctx_set_key, task_id)
-redis.call('SET', idem_key, task_id)
+redis.call('SET', idem_key, task_id, 'EX', 86400)
 
 return task_id
 """
@@ -489,7 +489,10 @@ class RedisStorage(Storage[ContextT]):
         filtered.sort(key=lambda t: t.status.timestamp or "", reverse=True)
 
         total_size = len(filtered)
-        offset = int(query.page_token) if query.page_token else 0
+        try:
+            offset = int(query.page_token) if query.page_token else 0
+        except ValueError:
+            offset = 0
         page = filtered[offset : offset + query.page_size]
 
         next_offset = offset + query.page_size

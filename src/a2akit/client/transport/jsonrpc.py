@@ -116,6 +116,7 @@ class JsonRpcTransport(Transport):
             self._url,
             json=envelope,
             headers=self._headers(),
+            timeout=httpx.Timeout(5.0, read=None),
         ) as response:
             if not response.is_success:
                 await response.aread()
@@ -163,6 +164,7 @@ class JsonRpcTransport(Transport):
             self._url,
             json=envelope,
             headers=headers,
+            timeout=httpx.Timeout(5.0, read=None),
         ) as response:
             if not response.is_success:
                 await response.aread()

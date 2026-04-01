@@ -215,13 +215,17 @@ class A2AClient:
 
     async def close(self) -> None:
         """Clean up resources."""
-        if self._transport is not None:
-            await self._transport.close()
+        try:
+            if self._transport is not None:
+                await self._transport.close()
+        finally:
             self._transport = None
-        if self._http_client is not None and not self._external_http:
-            await self._http_client.aclose()
-            self._http_client = None
-        self._connected = False
+            try:
+                if self._http_client is not None and not self._external_http:
+                    await self._http_client.aclose()
+            finally:
+                self._http_client = None
+                self._connected = False
 
     async def __aenter__(self) -> Self:
         try:

@@ -509,6 +509,13 @@ class RedisBroker(Broker):
                         )
                     except Exception:
                         logger.exception("Failed to deserialize operation %s", msg_id)
+                        await self._r.xadd(
+                            self._dlq_key,
+                            {
+                                b"op": fields.get(b"op", b""),
+                                b"error": b"deserialization_failed",
+                            },
+                        )
                         await self._r.xack(self._stream_key, self._group_name, msg_id)
 
     async def _claim_stale_messages(self) -> AsyncIterator[OperationHandle]:
@@ -570,6 +577,13 @@ class RedisBroker(Broker):
                     )
                 except Exception:
                     logger.exception("Failed to deserialize claimed message %s", msg_id)
+                    await self._r.xadd(
+                        self._dlq_key,
+                        {
+                            b"op": fields.get(b"op", b""),
+                            b"error": b"deserialization_failed",
+                        },
+                    )
                     await self._r.xack(self._stream_key, self._group_name, msg_id)
         except aioredis.ResponseError:
             # Stream or group doesn't exist yet — nothing to claim

@@ -88,7 +88,10 @@ class InMemoryStorage(Storage[ContextT]):
             filtered.append(t)
 
         total_size = len(filtered)
-        offset = int(query.page_token) if query.page_token else 0
+        try:
+            offset = int(query.page_token) if query.page_token else 0
+        except ValueError:
+            offset = 0
         page = filtered[offset : offset + query.page_size]
 
         results: list[Task] = []
