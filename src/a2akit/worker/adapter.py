@@ -175,10 +175,14 @@ class WorkerAdapter:
                         context_id,
                         "Worker failed to process task",
                     )
-                if not acked:
-                    await handle.ack()
             except Exception:
                 logger.exception("Failed to mark task as failed after error")
+            finally:
+                if not acked:
+                    try:
+                        await handle.ack()
+                    except Exception:
+                        logger.exception("Failed to ack after max retries")
 
     async def _dispatch(self, op: Any) -> None:
         """Route an operation to the appropriate handler."""
@@ -367,14 +371,20 @@ class WorkerAdapter:
                         span.set_status(StatusCode.OK)
             finally:
                 with anyio.CancelScope(shield=True):
-                    try:
-                        await self._event_bus.cleanup(task_id)
-                    except Exception:
-                        logger.exception("event_bus cleanup failed for %s", task_id)
-                    try:
-                        await self._cancel_registry.cleanup(task_id)
-                    except Exception:
-                        logger.exception("cancel_registry cleanup failed for %s", task_id)
+                    # Only clean up event bus and cancel registry for terminal
+                    # tasks. Non-terminal states (input_required, auth_required)
+                    # need the replay buffer for client reconnects, and
+                    # shutdown-retried tasks need the cancel key intact.
+                    current = await self._storage.load_task(task_id)
+                    if current and current.status.state in TERMINAL_STATES:
+                        try:
+                            await self._event_bus.cleanup(task_id)
+                        except Exception:
+                            logger.exception("event_bus cleanup failed for %s", task_id)
+                        try:
+                            await self._cancel_registry.cleanup(task_id)
+                        except Exception:
+                            logger.exception("cancel_registry cleanup failed for %s", task_id)
 
     @staticmethod
     async def _mark_canceled(

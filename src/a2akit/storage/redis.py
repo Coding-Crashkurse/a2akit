@@ -456,12 +456,12 @@ class RedisStorage(Storage[ContextT]):
             task_ids = [tid.decode() for tid in task_ids_bytes]
         else:
             # Scan for all task keys
-            task_ids = []
+            task_ids_set: set[str] = set()
             pattern = f"{self._key_prefix}task:*"
             async for key in self._r.scan_iter(match=pattern, count=200):
                 key_str = key.decode() if isinstance(key, bytes) else key
-                task_id = key_str[len(f"{self._key_prefix}task:") :]
-                task_ids.append(task_id)
+                task_ids_set.add(key_str[len(f"{self._key_prefix}task:") :])
+            task_ids = list(task_ids_set)
 
         # Load and filter tasks
         filtered: list[Task] = []
