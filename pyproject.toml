@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "a2akit"
-version = "0.0.24"
+version = "0.0.25"
 description = "A2A agent framework in one import."
 readme = "README.md"
 license = "MIT"

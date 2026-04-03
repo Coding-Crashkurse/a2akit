@@ -96,15 +96,17 @@ async def test_replay_after_event_id(redis_event_bus):
 
 
 async def test_cleanup_deletes_stream(redis_event_bus):
-    """cleanup() deletes the replay stream."""
+    """cleanup() sets a TTL on the replay stream instead of deleting immediately."""
     task_id = "task-cleanup"
     await redis_event_bus.publish(task_id, _status_event(task_id))
 
     stream_key = f"{redis_event_bus._stream_prefix}{task_id}"
     assert await redis_event_bus._redis.exists(stream_key)
+    assert await redis_event_bus._redis.ttl(stream_key) == -1  # no TTL before cleanup
 
     await redis_event_bus.cleanup(task_id)
-    assert not await redis_event_bus._redis.exists(stream_key)
+    ttl = await redis_event_bus._redis.ttl(stream_key)
+    assert 0 < ttl <= 60  # EXPIRE 60 was set
 
 
 async def test_final_event_ends_iterator(redis_event_bus):

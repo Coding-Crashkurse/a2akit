@@ -4,6 +4,143 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.0.25] — 2026-04-03
+
+### Fixed
+- **Shutdown vs user-cancel distinction** — `WorkerAdapter` now checks
+  `cancel_event.is_set()` before marking tasks as canceled. Server shutdown
+  (SIGTERM, HPA scale-down) re-raises `CancelledError` so the broker NACKs
+  the message for retry by another worker, instead of permanently losing tasks.
+- **XAUTOCLAIM recovery speed** — `block=0` after claiming stale messages
+  prevents the 5-second `xreadgroup` wait between claims. Recovery of 500
+  stale tasks: ~0.5s instead of ~40 minutes.
+- **Poison pill pre-dispatch check** — `_handle_op_inner` skips worker dispatch
+  when `handle.attempt > max_retries`, directly marking the task as failed
+  instead of re-executing code that crashes the process.
+- **mark_failed before ack ordering** — both the poison-pill handler and the
+  max-retries path now write the failed state to storage before ACK'ing the
+  broker message, preventing zombie tasks on DB failure.
+- **ConcurrencyError resilience in _submit_task** — parallel client retries
+  that hit a version conflict now re-check idempotency instead of surfacing
+  a 409 error followed by a 422 on the next retry.
+- **send_status / _flush_artifacts ConcurrencyError** — intermediate writes
+  that lose a version race now re-buffer artifacts and return instead of
+  killing the task. `_last_flush` is not updated on failure so retries
+  happen sooner.
+- **_terminal_transition cancel shield** — post-DB-write SSE emission is now
+  wrapped in `CancelScope(shield=True)` so the final event and `_turn_ended`
+  flag always complete, preventing subscriber hangs when cancel fires between
+  the storage write and event publish.
+- **subscribe_task subscribe-before-load** — EventBus subscription is now
+  established before the DB read, eliminating a race window where events
+  published between load and subscribe were missed.
+- **subscribe_task terminal reconnect** — clients reconnecting with
+  `Last-Event-ID` to a terminal task now receive the final snapshot instead
+  of being rejected with `UnsupportedOperationError` or hanging forever.
+- **stream_message duplicate fresh check** — duplicate stream requests now
+  re-load the task inside the subscription context to detect terminal state,
+  preventing infinite hangs on already-completed tasks.
+- **SSE reconnect deduplication** — `subscribe_task` skips the initial
+  snapshot when `after_event_id` is set, preventing data duplication with
+  replay events.
+- **RedisEventBus gap-fill for new subscribers** — new subscriptions
+  (without `after_event_id`) now start from the current stream end
+  (`XREVRANGE count=1`) instead of `"0-0"`, preventing replay of the
+  entire event history.
+- **Redis EventBus safety poll throttle** — fallback XRANGE polls now
+  fire every ~30 seconds instead of every 1 second per subscriber,
+  reducing idle Redis load by ~97%.
+- **Redis cleanup EXPIRE instead of DELETE** — `event_bus.cleanup()` now
+  sets a 60-second TTL instead of immediately deleting the replay stream,
+  giving active subscribers time to read the final events.
+- **SSE generator aclose resilience** — `agen.aclose()` failure in REST
+  and JSON-RPC streaming endpoints no longer skips middleware
+  `after_dispatch` (nested `try/finally`).
+- **Stream setup middleware cleanup** — `_stream_setup` and JSON-RPC
+  `_handle_message_send_stream` now call `after_dispatch` on error,
+  preventing middleware resource leaks when stream initialization fails.
+- **REST SSE DirectReply filter** — first event is now filtered for
+  `DirectReply` consistently with the JSON-RPC transport.
+- **JSON-RPC lastEventId in params** — client `subscribe_task` now sends
+  `lastEventId` in JSON-RPC params instead of the HTTP header, matching
+  the server's expectation.
+- **_enqueue_or_fail with status_message** — broker failures now include
+  an error message ("Failed to enqueue task") in `status_message` and
+  `task.history`, giving polling clients context for the failure.
+- **Follow-up idempotency re-enqueue prevention** — `_submit_task` returns
+  `(task, should_enqueue)` tuple; duplicate follow-up messages no longer
+  trigger a second broker enqueue or worker execution.
+- **Idempotent new task detection** — `create_task` duplicates now return
+  `should_enqueue=False` when the existing task is past `submitted` state.
+- **Follow-up context_id** — `send_message` and `stream_message` use the
+  task's real `context_id` for follow-ups instead of generating a new UUID.
+- **Client context_id for follow-ups** — `_build_params` only generates a
+  UUID for new tasks; follow-ups with `task_id` omit `context_id` so the
+  server uses the task's existing value (was: `ContextMismatchError`).
+- **Client SSE read timeout** — streaming requests use
+  `Timeout(5.0, read=None)` so long-running LLM agents don't trigger
+  `ReadTimeout` between chunks.
+- **REST stream Content-Type check** — `stream_message` and `subscribe_task`
+  in the REST transport now check for `text/event-stream` Content-Type,
+  consistent with the JSON-RPC transport.
+- **Cancel spam guard** — `cancel_task` checks `is_cancelled` before spawning
+  a new `_force_cancel_after` background task, preventing memory growth from
+  repeated cancel requests.
+- **RedisCancelScope graceful degradation** — `_start()` catches
+  `ConnectionError` during Pub/Sub subscribe and degrades to the force-cancel
+  fallback instead of crashing the worker's TaskGroup.
+- **OCC retry uses fresh version** — `cancel_task_in_storage` and
+  `_mark_failed` now call `storage.get_version()` on retry instead of using
+  the potentially stale `exc.current_version`.
+- **Redis event stream fallback TTL** — `publish()` sets a 24-hour EXPIRE
+  on the replay stream as crash-recovery fallback.
+- **SSRF bypass via IPv6-mapped IPv4** — `_is_blocked_ip` now resolves
+  `::ffff:10.x.x.x` to its mapped IPv4 address before checking blocked
+  ranges.
+- **Content-Type validation for chunked transfers** — `has_body` check now
+  includes `Transfer-Encoding` header, not just `Content-Length`.
+- **CancelRegistry connection leak** — `RedisCancelRegistry.close()` is
+  now called during server shutdown.
+- **Redis idempotency key TTL** — `SET idem_key` uses `EX 86400` to prevent
+  unbounded growth.
+- **Corrupt broker payloads to DLQ** — non-deserializable messages are moved
+  to the dead-letter queue instead of being silently ACK'd.
+- **ConcurrencyError exception handler** — mapped to HTTP 409 / JSON-RPC
+  `-32004` instead of 500 Internal Error.
+- **JSON-RPC `params: null` crash** — explicit JSON `null` no longer causes
+  `AttributeError` in method handlers.
+- **JSON-RPC AuthenticationRequiredError** — mapped to `-32600` with
+  descriptive message instead of generic `-32603 Internal Error`.
+- **FastAPI RequestValidationError** — returns A2A error format
+  (`{"code": -32600}`) instead of FastAPI's default `{"detail": [...]}`.
+- **Push config ValidationError** — returns HTTP 400 with error details
+  instead of 500 Internal Server Error.
+- **Enum repr in error messages** — `TaskNotAcceptingMessagesError` shows
+  `working` instead of `TaskState.working`.
+- **_find_direct_reply with historyLength** — direct reply search uses
+  full history before applying `historyLength` trimming.
+- **Lifecycle guard** — `_terminal_transition` raises `RuntimeError` on
+  double lifecycle calls (e.g. `complete()` after `request_input()`).
+- **send_status / emit_artifact turn guard** — silently returns if called
+  after the turn has ended, preventing status_message overwrites.
+- **SQL COUNT performance** — `list_tasks` uses `func.count()` instead of
+  `len(fetchall())`, preventing OOM on large tables.
+- **Defensive Redis deserialization** — empty hash fields fall back to
+  `"[]"` instead of crashing with `json.loads("")`.
+- **Invalid pageToken handling** — non-numeric page tokens fall back to
+  offset 0 in all three storage backends.
+- **Stable sort tie-breaker** — all three backends use `(timestamp, id)`
+  for deterministic pagination.
+- **Client close() resilience** — nested `try/finally` ensures HTTP client
+  cleanup even if transport close fails.
+- **Client __aenter__ cleanup** — `close()` is called if `connect()` fails.
+- **Transport fallback safety** — `transport` variable initialized before
+  loop to prevent `UnboundLocalError`.
+- **Dynamic telemetry version** — `TRACER_VERSION` read from package
+  metadata via `importlib.metadata`.
+- **Redis EventBus cleanup test** — updated to verify TTL instead of
+  key deletion, matching the EXPIRE-based cleanup behavior.
+
 ## [0.0.24] — 2026-04-01
 
 ### Fixed
