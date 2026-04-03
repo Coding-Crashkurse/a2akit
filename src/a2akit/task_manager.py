@@ -223,6 +223,10 @@ class TaskManager:
                 and any(m.message_id == message.message_id for m in reloaded.history)
             ):
                 return reloaded, False  # Idempotent duplicate resolved
+            # If the task became terminal between our read and write, raise
+            # the correct error so clients don't get a misleading "retry" hint.
+            if reloaded and reloaded.status.state in TERMINAL_STATES:
+                raise TaskTerminalStateError("task is terminal") from None
             raise
         # Re-load to return the updated Task object.
         updated = await self.storage.load_task(task.id)

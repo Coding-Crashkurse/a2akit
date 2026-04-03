@@ -61,20 +61,23 @@ class PushDeliveryEmitter(EventEmitter):
         )
 
         if state is not None:
-            t = asyncio.create_task(self._maybe_deliver(task_id))
-            self._background_tasks.add(t)
-            t.add_done_callback(self._background_tasks.discard)
+            # Load task snapshot NOW (before the next worker step changes it)
+            # to ensure the webhook delivers the correct state, not a future one.
+            task_snapshot = await self._storage.load_task(task_id)
+            if task_snapshot:
+                t = asyncio.create_task(self._deliver_snapshot(task_id, task_snapshot))
+                self._background_tasks.add(t)
+                t.add_done_callback(self._background_tasks.discard)
 
         return result
 
-    async def _maybe_deliver(self, task_id: str) -> None:
+    async def _deliver_snapshot(self, task_id: str, task: Any) -> None:
+        """Deliver a frozen task snapshot to webhook subscribers."""
         try:
             configs = await self._push_store.get_configs_for_delivery(task_id)
             if not configs:
                 return
-            task = await self._storage.load_task(task_id)
-            if task:
-                await self._delivery.deliver(configs, task)
+            await self._delivery.deliver(configs, task)
         except Exception:
             logger.exception("Push delivery trigger failed for task %s", task_id)
 

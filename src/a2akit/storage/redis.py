@@ -508,16 +508,27 @@ class RedisStorage(Storage[ContextT]):
     async def delete_task(self, task_id: str) -> bool:
         task_key = self._task_key(task_id)
 
-        # Get context_id before deleting
-        context_id = await self._r.hget(task_key, "context_id")
-        if context_id is None:
+        # Get context_id and idempotency_key before deleting
+        fields = await self._r.hmget(task_key, "context_id", "metadata_json")
+        context_id_raw = fields[0]
+        if context_id_raw is None:
             return False
 
-        ctx_id = context_id.decode() if isinstance(context_id, bytes) else context_id
+        ctx_id = context_id_raw.decode() if isinstance(context_id_raw, bytes) else context_id_raw
 
-        # Remove from context set and delete hash
+        # Clean up idempotency key if present
+        keys_to_delete = [task_key]
+        if fields[1]:
+            import json as _json
+
+            meta = _json.loads(fields[1].decode() if isinstance(fields[1], bytes) else fields[1])
+            idem_key = meta.get("_idempotency_key")
+            if idem_key:
+                keys_to_delete.append(self._idem_key(ctx_id, idem_key))
+
+        # Remove from context set and delete hash + idem key
         await self._r.srem(self._ctx_set_key(ctx_id), task_id)
-        await self._r.delete(task_key)
+        await self._r.delete(*keys_to_delete)
         return True
 
     async def delete_context(self, context_id: str) -> int:
@@ -531,8 +542,17 @@ class RedisStorage(Storage[ContextT]):
 
         task_ids = [tid.decode() for tid in task_ids_bytes]
 
-        # Delete all task hashes + context set + context data
-        keys_to_delete = [self._task_key(tid) for tid in task_ids]
+        # Delete all task hashes + idempotency keys + context set + context data
+        keys_to_delete = []
+        for tid in task_ids:
+            keys_to_delete.append(self._task_key(tid))
+            # Clean up idempotency key if present
+            meta_raw = await self._r.hget(self._task_key(tid), "metadata_json")
+            if meta_raw:
+                meta = json.loads(meta_raw.decode() if isinstance(meta_raw, bytes) else meta_raw)
+                idem_key = meta.get("_idempotency_key")
+                if idem_key:
+                    keys_to_delete.append(self._idem_key(context_id, idem_key))
         keys_to_delete.append(ctx_set_key)
         keys_to_delete.append(self._context_data_key(context_id))
         await self._r.delete(*keys_to_delete)

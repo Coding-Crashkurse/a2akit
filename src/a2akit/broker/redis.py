@@ -45,12 +45,16 @@ def _serialize_operation(
     request_context: dict[str, Any],
 ) -> str:
     """Serialize a task operation to JSON for the Redis stream."""
+    # Filter internal/non-serializable keys (e.g. _otel_span, _otel_token)
+    # from request_context — they are meant for in-process middleware
+    # lifecycles and cannot be serialized to a Redis stream.
+    safe_context = {k: v for k, v in request_context.items() if not k.startswith("_")}
     return json.dumps(
         {
             "operation": "run",
             "params": params.model_dump(mode="json", by_alias=True, exclude_none=True),
             "is_new_task": is_new_task,
-            "request_context": request_context,
+            "request_context": safe_context,
         }
     )
 

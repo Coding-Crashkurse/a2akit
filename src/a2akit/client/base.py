@@ -132,9 +132,16 @@ class A2AClient:
             except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
                 errors.append((url, proto, exc))
                 continue
-            except Exception:
-                # Health check might not exist or might fail for other reasons;
-                # accept the transport anyway (backwards compat).
+            except Exception as exc:
+                # Server errors (5xx) indicate the backend is down —
+                # skip to next transport for fallback.
+                from a2akit.client.errors import ProtocolError
+
+                if isinstance(exc, ProtocolError) and "HTTP 5" in str(exc):
+                    errors.append((url, proto, exc))
+                    continue
+                # Other errors (404, unexpected) — accept transport anyway
+                # (health endpoint may not exist, backwards compat).
                 if transport is None:
                     continue
 
