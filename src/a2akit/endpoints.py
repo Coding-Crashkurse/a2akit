@@ -283,9 +283,11 @@ def build_a2a_router() -> APIRouter:
         except Exception:
             logger.exception("SSE stream aborted")
         finally:
-            await agen.aclose()
-            for mw in reversed(middlewares):
-                await mw.after_dispatch(envelope)
+            try:
+                await agen.aclose()
+            finally:
+                for mw in reversed(middlewares):
+                    await mw.after_dispatch(envelope)
 
     @router.get("/v1/tasks/{task_id}", tags=["Tasks"])
     async def tasks_get(

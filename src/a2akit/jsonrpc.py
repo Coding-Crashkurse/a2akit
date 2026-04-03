@@ -273,9 +273,11 @@ async def _handle_message_send_stream(
         except Exception:
             logger.exception("JSON-RPC SSE stream aborted")
         finally:
-            await agen.aclose()
-            for mw in reversed(middlewares):
-                await mw.after_dispatch(envelope)
+            try:
+                await agen.aclose()
+            finally:
+                for mw in reversed(middlewares):
+                    await mw.after_dispatch(envelope)
 
     return StreamingResponse(_sse_generator(), media_type="text/event-stream")
 
