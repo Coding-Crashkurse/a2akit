@@ -124,7 +124,12 @@ class RedisEventBus(EventBus):
             self._redis = aioredis.Redis(connection_pool=self._pool)
         else:
             self._redis = aioredis.from_url(self._url)
-        await self._redis.ping()
+        try:
+            await self._redis.ping()
+        except Exception:
+            if self._owns_connection:
+                await self._redis.aclose()
+            raise
         logger.info("Redis event bus connected")
         return self
 

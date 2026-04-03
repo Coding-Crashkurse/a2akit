@@ -23,7 +23,7 @@ def _extract_text_from_parts(parts: list[Any]) -> str | None:
         inner = p.root if hasattr(p, "root") else p
         if isinstance(inner, TextPart):
             texts.append(inner.text)
-    return "\n".join(texts) if texts else None
+    return "".join(texts) if texts else None
 
 
 def _extract_data_from_parts(parts: list[Any]) -> dict[str, Any] | None:

@@ -139,9 +139,13 @@ class WorkerAdapter:
                         context_id,
                         "Task repeatedly crashed worker processes",
                     )
-                await handle.ack()
             except Exception:
                 logger.exception("Failed to mark poison pill task as failed")
+            finally:
+                try:
+                    await handle.ack()
+                except Exception:
+                    logger.warning("Failed to ack poison pill message")
             return
 
         acked = False

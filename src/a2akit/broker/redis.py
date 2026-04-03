@@ -406,23 +406,28 @@ class RedisBroker(Broker):
         else:
             self._redis = aioredis.from_url(self._url)
 
-        # Verify connectivity
-        await self._redis.ping()
-
-        # Create consumer group (MKSTREAM creates the stream if needed)
         try:
-            await self._redis.xgroup_create(
-                self._stream_key, self._group_name, id="0", mkstream=True
-            )
-            logger.info(
-                "Created consumer group %s on stream %s",
-                self._group_name,
-                self._stream_key,
-            )
-        except aioredis.ResponseError as e:
-            if "BUSYGROUP" not in str(e):
-                raise
-            # Group already exists — fine
+            # Verify connectivity
+            await self._redis.ping()
+
+            # Create consumer group (MKSTREAM creates the stream if needed)
+            try:
+                await self._redis.xgroup_create(
+                    self._stream_key, self._group_name, id="0", mkstream=True
+                )
+                logger.info(
+                    "Created consumer group %s on stream %s",
+                    self._group_name,
+                    self._stream_key,
+                )
+            except aioredis.ResponseError as e:
+                if "BUSYGROUP" not in str(e):
+                    raise
+                # Group already exists — fine
+        except Exception:
+            if self._owns_connection:
+                await self._redis.aclose()
+            raise
 
         logger.info("Redis broker consumer registered: %s", self._consumer_name)
         return self
@@ -488,19 +493,26 @@ class RedisBroker(Broker):
         while not self._shutdown_flag:
             # 1. Claim stale messages from dead consumers
             claimed_any = False
-            async for handle in self._claim_stale_messages():
-                yield handle
-                claimed_any = True
+            try:
+                async for handle in self._claim_stale_messages():
+                    yield handle
+                    claimed_any = True
+            except aioredis.ConnectionError:
+                logger.warning("Redis connection lost during claim, retrying...")
+                await asyncio.sleep(1)
+                continue
 
             # 2. Read new messages (blocking)
-            # After claims, don't block — loop back immediately for more stale messages.
+            # After claims, use non-blocking read (block=None) to loop back
+            # immediately for more stale messages. block=0 means "block forever"
+            # in Redis, so we must use None for non-blocking.
             try:
                 entries = await self._r.xreadgroup(
                     groupname=self._group_name,
                     consumername=self._consumer_name,
                     streams={self._stream_key: ">"},
                     count=1,
-                    block=0 if claimed_any else self._block_ms,
+                    block=None if claimed_any else self._block_ms,
                 )
             except aioredis.ConnectionError:
                 logger.warning("Redis connection lost, retrying...")

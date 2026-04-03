@@ -4,6 +4,70 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.0.26] — 2026-04-03
+
+### Fixed
+- **Client token-streaming text corruption** — `_extract_text_from_parts` now
+  uses `"".join()` instead of `"\n".join()`, fixing garbled output when
+  streaming LLM tokens via `emit_text_artifact(append=True)`.
+- **Poison pill ack in finally** — `handle.ack()` for poison pills now runs in
+  a `finally` block, preventing infinite XAUTOCLAIM loops when `_mark_failed`
+  throws (e.g. storage down).
+- **Redis `BLOCK 0` deadlock** — `xreadgroup` after claims now uses `block=None`
+  (non-blocking) instead of `block=0` (block forever). Workers no longer freeze
+  after claiming stale messages.
+- **Redis `__aenter__` connection leak** — all three Redis backends (Storage,
+  EventBus, Broker) now close the connection pool in `__aenter__` if `ping()`
+  or setup fails, preventing socket leaks on startup errors.
+- **XAUTOCLAIM ConnectionError crash** — `_claim_stale_messages` is now wrapped
+  in `try/except ConnectionError` in the broker loop, preventing a Redis network
+  blip from crashing the entire server process.
+- **OTel + Redis serialization crash** — `_serialize_operation` now filters
+  `_`-prefixed keys (e.g. `_otel_span`, `_otel_token`) from `request_context`
+  before `json.dumps`, fixing 100% failure rate when Redis broker + telemetry
+  are both enabled.
+- **Push webhook state ordering** — `PushDeliveryEmitter` loads the task snapshot
+  synchronously after `update_task` instead of in a deferred background task,
+  ensuring webhooks deliver the correct intermediate state instead of always
+  showing the final state.
+- **CancelRegistry cleanup on every turn** — Redis Pub/Sub connections from
+  cancel scopes are now cleaned up after every worker turn (not just terminal
+  states), preventing connection pool exhaustion on multi-turn conversations
+  with abandoned `input_required` tasks.
+- **Redis idempotency key cleanup** — `delete_task` and `delete_context` now
+  read `_idempotency_key` from task metadata and delete the corresponding Redis
+  key, preventing 500 errors when re-sending after task deletion.
+- **Transport fallback for 5xx** — `ProtocolError` with HTTP 5xx status now
+  triggers fallback to the next transport candidate instead of accepting a
+  broken backend.
+- **ConcurrencyError terminal detection** — `_submit_task` raises
+  `TaskTerminalStateError` instead of `ConcurrencyError` when the task became
+  terminal between read and write, giving clients the correct error.
+- **Cleanup only for terminal tasks** — worker `finally` block now loads task
+  state and only runs `event_bus.cleanup` for terminal tasks, preserving replay
+  buffers for `input_required`/`auth_required` states and shutdown retries.
+- **Max-retries ack in finally** — `handle.ack()` runs in `finally` after
+  `_mark_failed`, preventing stuck messages when storage is down.
+- **Redis SCAN dedup** — `list_tasks` without `context_id` deduplicates scan
+  results via `set()`.
+- **BaseException artifact recovery** — `_flush_artifacts`, `_terminal_transition`,
+  and `send_status` catch `BaseException` instead of `Exception`, preventing
+  silent artifact loss when `CancelledError` fires during a DB write.
+- **Worker cleanup load_task guarded** — `load_task` in the worker `finally`
+  block is wrapped in `try/except`, preventing a storage error from replacing
+  `CancelledError` during shutdown.
+- **Nack exception handling** — `nack()` failure now falls through to
+  `mark_failed` instead of leaving the task stuck.
+- **Redis nack no sleep** — removed `asyncio.sleep` from `nack()` to prevent
+  semaphore starvation when multiple tasks fail concurrently.
+- **Shutdown vs cancel distinction** — worker checks `cancel_event.is_set()`
+  before marking tasks as canceled; server shutdown re-raises for broker retry.
+- **Lifecycle double-call guard** — `_terminal_transition` raises `RuntimeError`
+  on double lifecycle calls.
+- **send_status/emit_artifact turn guard** — silently returns after turn end.
+- **Various client fixes** — follow-up `context_id` handling, REST Content-Type
+  check, SSE read timeout, transport fallback safety.
+
 ## [0.0.25] — 2026-04-03
 
 ### Fixed

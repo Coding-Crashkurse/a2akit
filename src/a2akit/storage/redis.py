@@ -162,10 +162,15 @@ class RedisStorage(Storage[ContextT]):
             self._redis = aioredis.Redis(connection_pool=self._pool)
         else:
             self._redis = aioredis.from_url(self._url)
-        await self._redis.ping()
-        # register_script() handles NOSCRIPT retry automatically after Redis restarts
-        self._update_script = self._redis.register_script(_UPDATE_TASK_LUA)
-        self._create_idem_script = self._redis.register_script(_CREATE_IDEMPOTENT_LUA)
+        try:
+            await self._redis.ping()
+            # register_script() handles NOSCRIPT retry automatically after Redis restarts
+            self._update_script = self._redis.register_script(_UPDATE_TASK_LUA)
+            self._create_idem_script = self._redis.register_script(_CREATE_IDEMPOTENT_LUA)
+        except Exception:
+            if self._owns_connection:
+                await self._redis.aclose()
+            raise
         logger.info("Redis storage connected (prefix=%s)", self._key_prefix)
         return self
 
