@@ -126,7 +126,6 @@ class WorkerAdapter:
                 self._max_retries,
             )
             try:
-                await handle.ack()
                 op = handle.operation
                 params = getattr(op, "params", None)
                 msg = getattr(params, "message", None) if params else None
@@ -140,6 +139,7 @@ class WorkerAdapter:
                         context_id,
                         "Task repeatedly crashed worker processes",
                     )
+                await handle.ack()
             except Exception:
                 logger.exception("Failed to mark poison pill task as failed")
             return

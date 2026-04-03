@@ -1055,6 +1055,9 @@ class TaskContextImpl(TaskContext):
 
     async def send_status(self, message: str | None = None) -> None:
         """Emit an intermediate status update (state stays working)."""
+        if self._turn_ended:
+            logger.warning("send_status called after turn ended for task %s", self.task_id)
+            return
         status_msg = None
         if message is not None:
             status_msg = self._make_agent_message([Part(TextPart(text=message))])
@@ -1105,6 +1108,9 @@ class TaskContextImpl(TaskContext):
         extensions: list[str] | None = None,
     ) -> None:
         """Emit an artifact update event and persist it."""
+        if self._turn_ended:
+            logger.warning("emit_artifact called after turn ended for task %s", self.task_id)
+            return
         parts = _build_parts(
             text=text,
             data=data,
