@@ -264,7 +264,7 @@ class RedisStorage(Storage[ContextT]):
             kind="task",
             status=status,
             history=history,
-            artifacts=artifacts_list if artifacts_list else None,
+            artifacts=artifacts_list,
             metadata=metadata_raw,
         )
 
@@ -330,7 +330,7 @@ class RedisStorage(Storage[ContextT]):
             )
             returned_id = result_id.decode() if isinstance(result_id, bytes) else result_id
             if returned_id != task_id:
-                # Existing task found via idempotency key
+                # Existing task found via idempotency key — no just-created marker.
                 existing = await self.load_task(returned_id)
                 if existing is None:
                     raise TaskNotFoundError(
@@ -338,13 +338,21 @@ class RedisStorage(Storage[ContextT]):
                     )
                 return existing
         else:
-            # Non-idempotent: just create
-            await self._r.hset(self._task_key(task_id), mapping=fields)
-            await self._r.sadd(self._ctx_set_key(context_id), task_id)
+            # Non-idempotent: HSET + SADD atomically via pipeline/MULTI so a
+            # crash between the two commands cannot orphan the task (task
+            # hash written, but not in the context set → invisible to
+            # list_tasks by context_id).
+            async with self._r.pipeline(transaction=True) as pipe:
+                pipe.hset(self._task_key(task_id), mapping=fields)
+                pipe.sadd(self._ctx_set_key(context_id), task_id)
+                await pipe.execute()
 
         loaded = await self.load_task(task_id)
         if loaded is None:
             raise TaskNotFoundError(f"Task {task_id} vanished immediately after create")
+        # Attach the transient just-created marker (see storage/base.py
+        # contract). Not persisted — TaskManager pops it before further use.
+        loaded.metadata = {**(loaded.metadata or {}), "_a2akit_just_created": True}
         return loaded
 
     async def update_task(
@@ -358,84 +366,108 @@ class RedisStorage(Storage[ContextT]):
         task_metadata: dict[str, Any] | None = None,
         expected_version: int | None = None,
     ) -> int:
-        # Build values to update — we need current data for merging
-        current_data = await self._r.hgetall(self._task_key(task_id))
-        if not current_data:
-            raise TaskNotFoundError(f"Task {task_id} not found")
+        # The merge (history append, artifact apply, metadata merge) happens in
+        # Python based on a read of the current hash. To prevent silent data loss
+        # from concurrent writers we ALWAYS enforce OCC against the version we
+        # just read. If the caller did not request a specific expected_version
+        # we transparently retry on VERSION_MISMATCH so their semantics are
+        # preserved ("blind write"). If the caller did request one, a mismatch
+        # is surfaced as ConcurrencyError as before.
+        if self._update_script is None:
+            raise RuntimeError("RedisStorage not connected — Lua scripts not registered")
 
-        decoded = {k.decode(): v.decode() for k, v in current_data.items()}
+        max_attempts = 1 if expected_version is not None else 8
+        for attempt in range(max_attempts):
+            current_data = await self._r.hgetall(self._task_key(task_id))
+            if not current_data:
+                raise TaskNotFoundError(f"Task {task_id} not found")
 
-        values: dict[str, str] = {}
+            decoded = {k.decode(): v.decode() for k, v in current_data.items()}
+            read_version = int(decoded["version"])
+            occ_version = expected_version if expected_version is not None else read_version
 
-        if messages:
-            existing_history = self._deserialize_messages(decoded.get("history") or "[]")
-            existing_history.extend(messages)
-            values["history"] = self._serialize_messages(existing_history)
+            values: dict[str, str] = {}
 
-        if artifacts:
-            existing_artifacts = self._deserialize_artifacts(decoded.get("artifacts") or "[]")
-            for aw in artifacts:
-                existing_artifacts = self._apply_artifact(
-                    existing_artifacts, aw.artifact, append=aw.append
+            if messages:
+                existing_history = self._deserialize_messages(decoded.get("history") or "[]")
+                existing_history.extend(messages)
+                values["history"] = self._serialize_messages(existing_history)
+
+            if artifacts:
+                existing_artifacts = self._deserialize_artifacts(decoded.get("artifacts") or "[]")
+                for aw in artifacts:
+                    existing_artifacts = self._apply_artifact(
+                        existing_artifacts, aw.artifact, append=aw.append
+                    )
+                values["artifacts"] = self._serialize_artifacts(existing_artifacts)
+
+            if task_metadata:
+                existing_meta = (
+                    json.loads(decoded["metadata_json"]) if decoded.get("metadata_json") else {}
                 )
-            values["artifacts"] = self._serialize_artifacts(existing_artifacts)
+                existing_meta.update(task_metadata)
+                values["metadata_json"] = json.dumps(existing_meta)
 
-        if task_metadata:
-            existing_meta = (
-                json.loads(decoded["metadata_json"]) if decoded.get("metadata_json") else {}
-            )
-            existing_meta.update(task_metadata)
-            values["metadata_json"] = json.dumps(existing_meta)
+            if state is not None:
+                ts = datetime.now(UTC).isoformat()
+                values["status_state"] = state.value
+                values["status_timestamp"] = ts
+                values["status_message"] = self._serialize_message(status_message) or ""
+                # Append state-transition record
+                existing_meta = json.loads(
+                    values.get("metadata_json") or decoded.get("metadata_json") or "{}"
+                )
+                existing_meta.setdefault("stateTransitions", []).append(
+                    _build_transition_record(state.value, ts, status_message),
+                )
+                values["metadata_json"] = json.dumps(existing_meta)
+            elif status_message is not None:
+                # Update status message without a state transition (e.g. progress text)
+                values["status_message"] = self._serialize_message(status_message) or ""
+                values["status_timestamp"] = datetime.now(UTC).isoformat()
 
-        if state is not None:
-            ts = datetime.now(UTC).isoformat()
-            values["status_state"] = state.value
-            values["status_timestamp"] = ts
-            values["status_message"] = self._serialize_message(status_message) or ""
-            # Append state-transition record
-            existing_meta = json.loads(
-                values.get("metadata_json") or decoded.get("metadata_json") or "{}"
-            )
-            existing_meta.setdefault("stateTransitions", []).append(
-                _build_transition_record(state.value, ts, status_message),
-            )
-            values["metadata_json"] = json.dumps(existing_meta)
-        elif status_message is not None:
-            # Update status message without a state transition (e.g. progress text)
-            values["status_message"] = self._serialize_message(status_message) or ""
-            values["status_timestamp"] = datetime.now(UTC).isoformat()
+            try:
+                new_version: int = await self._update_script(
+                    keys=[self._task_key(task_id)],
+                    args=[
+                        str(occ_version),
+                        state.value if state is not None else "",
+                        json.dumps(values),
+                    ],
+                    client=self._r,
+                )
+            except aioredis.ResponseError as e:
+                err = str(e)
+                if "TASK_NOT_FOUND" in err:
+                    raise TaskNotFoundError(f"Task {task_id} not found") from e
+                if "VERSION_MISMATCH" in err:
+                    current = int(err.split(":")[-1])
+                    if expected_version is not None:
+                        # Caller requested a specific version — surface the conflict
+                        raise ConcurrencyError(
+                            f"Version mismatch for task {task_id}: "
+                            f"expected {expected_version}, current {current}",
+                            current_version=current,
+                        ) from e
+                    # Transparent retry: another writer beat us; re-read and re-merge
+                    if attempt == max_attempts - 1:
+                        raise ConcurrencyError(
+                            f"Failed to update task {task_id} after {max_attempts} "
+                            f"attempts due to persistent contention",
+                            current_version=current,
+                        ) from e
+                    continue
+                if "TERMINAL_STATE" in err:
+                    parts = err.split(":")
+                    raise TaskTerminalStateError(
+                        f"Cannot transition terminal task {task_id} from {parts[1]} to {parts[2]}"
+                    ) from e
+                raise
 
-        try:
-            if self._update_script is None:
-                raise RuntimeError("RedisStorage not connected — Lua scripts not registered")
-            new_version: int = await self._update_script(
-                keys=[self._task_key(task_id)],
-                args=[
-                    str(expected_version) if expected_version is not None else "",
-                    state.value if state is not None else "",
-                    json.dumps(values),
-                ],
-                client=self._r,
-            )
-        except aioredis.ResponseError as e:
-            err = str(e)
-            if "TASK_NOT_FOUND" in err:
-                raise TaskNotFoundError(f"Task {task_id} not found") from e
-            if "VERSION_MISMATCH" in err:
-                current = int(err.split(":")[-1])
-                raise ConcurrencyError(
-                    f"Version mismatch for task {task_id}: "
-                    f"expected {expected_version}, current {current}",
-                    current_version=current,
-                ) from e
-            if "TERMINAL_STATE" in err:
-                parts = err.split(":")
-                raise TaskTerminalStateError(
-                    f"Cannot transition terminal task {task_id} from {parts[1]} to {parts[2]}"
-                ) from e
-            raise
+            return int(new_version)
 
-        return int(new_version)
+        # Unreachable: loop either returns or raises
+        raise RuntimeError("update_task retry loop exited without result")
 
     @staticmethod
     def _apply_artifact(

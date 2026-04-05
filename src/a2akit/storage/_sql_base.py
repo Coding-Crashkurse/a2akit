@@ -11,6 +11,7 @@ from typing import Any
 
 from a2a.types import Artifact, Message, Task, TaskState, TaskStatus
 from sqlalchemy import Column, Integer, MetaData, String, Table, Text, func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from a2akit.storage.base import (
@@ -176,7 +177,7 @@ class SQLStorageBase(Storage[ContextT]):
             kind="task",
             status=status,
             history=history,
-            artifacts=artifacts_list if artifacts_list else None,
+            artifacts=artifacts_list,
             metadata=metadata_raw,
         )
 
@@ -217,6 +218,7 @@ class SQLStorageBase(Storage[ContextT]):
                     idempotency_key,
                 )
                 if existing is not None:
+                    # Idempotent hit: return without the just-created marker.
                     return existing
             else:
                 initial_meta = {
@@ -242,6 +244,10 @@ class SQLStorageBase(Storage[ContextT]):
 
         loaded = await self.load_task(task_id)
         assert loaded is not None
+        # Attach the transient just-created marker (see storage/base.py
+        # contract). Not persisted — TaskManager pops it, and
+        # _sanitize_task_for_client strips any leftover _-prefixed keys.
+        loaded.metadata = {**(loaded.metadata or {}), "_a2akit_just_created": True}
         return loaded
 
     async def update_task(
@@ -435,19 +441,33 @@ class SQLStorageBase(Storage[ContextT]):
     async def update_context(self, context_id: str, context: ContextT) -> None:
         now = datetime.now(UTC).isoformat()
         data = json.dumps(context)
+        # UPDATE-then-INSERT with a fallback UPDATE on IntegrityError. This
+        # avoids the TOCTOU window of SELECT-then-INSERT/UPDATE: two
+        # concurrent callers for the same context_id could both see "no row"
+        # and both attempt INSERT, producing a primary-key violation.
         async with self._get_session() as session, session.begin():
             result = await session.execute(
-                contexts_table.select().where(contexts_table.c.context_id == context_id)
+                contexts_table.update()
+                .where(contexts_table.c.context_id == context_id)
+                .values(data=data, updated_at=now)
             )
-            if result.first():
-                await session.execute(
-                    contexts_table.update()
-                    .where(contexts_table.c.context_id == context_id)
-                    .values(data=data, updated_at=now)
-                )
-            else:
+            if getattr(result, "rowcount", 0) > 0:
+                return
+            try:
                 await session.execute(
                     contexts_table.insert().values(
                         context_id=context_id, data=data, updated_at=now
                     )
                 )
+            except IntegrityError:
+                # Another writer inserted the row between our UPDATE and
+                # INSERT. Roll back this transaction so we can start a fresh
+                # one for the retry UPDATE (the current transaction is
+                # poisoned after the IntegrityError).
+                await session.rollback()
+                async with self._get_session() as retry_session, retry_session.begin():
+                    await retry_session.execute(
+                        contexts_table.update()
+                        .where(contexts_table.c.context_id == context_id)
+                        .values(data=data, updated_at=now)
+                    )

@@ -87,22 +87,40 @@ class InMemoryEventBus(EventBus):
             self._replay_buffers[task_id] = buf
         buf.append(_BufferedEvent(id=counter, event=event))
 
-        # Fan out to live subscribers.
+        # Fan out to live subscribers. We MUST NOT hold the subscriber lock
+        # across `await s.send(...)` — a slow consumer with a full buffer would
+        # block the send and, in turn, block every other publish/subscribe
+        # operation on this bus (classic lock-under-await deadlock).
+        #
+        # Instead: snapshot the subscriber list under the lock, fan out outside
+        # the lock, and use `send_nowait` to avoid blocking on any one slow
+        # consumer. Subscribers whose buffers are full drop this event — they
+        # can still recover via the replay buffer on reconnect.
         async with self._subscriber_lock:
-            subscribers = self._subs.get(task_id, [])
-            if not subscribers:
-                return event_id
-            alive: list[MemoryObjectSendStream[tuple[str, StreamEvent]]] = []
-            for s in subscribers:
-                try:
-                    await s.send((event_id, event))
-                    alive.append(s)
-                except (anyio.ClosedResourceError, anyio.BrokenResourceError):
-                    pass
-            if alive:
-                self._subs[task_id] = alive
-            else:
-                self._subs.pop(task_id, None)
+            subscribers = list(self._subs.get(task_id, ()))
+        if not subscribers:
+            return event_id
+
+        dead: list[MemoryObjectSendStream[tuple[str, StreamEvent]]] = []
+        for s in subscribers:
+            try:
+                s.send_nowait((event_id, event))
+            except (anyio.ClosedResourceError, anyio.BrokenResourceError):
+                dead.append(s)
+            except anyio.WouldBlock:
+                # Slow consumer: drop this event for them. Replay buffer above
+                # still has the event for reconnection.
+                pass
+
+        if dead:
+            async with self._subscriber_lock:
+                lst = self._subs.get(task_id)
+                if lst:
+                    for s in dead:
+                        with suppress(ValueError):
+                            lst.remove(s)
+                    if not lst:
+                        self._subs.pop(task_id, None)
         return event_id
 
     @asynccontextmanager

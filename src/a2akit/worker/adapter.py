@@ -393,7 +393,8 @@ class WorkerAdapter:
                     except Exception:
                         logger.warning("Failed to load task %s during cleanup", task_id)
                         current = None
-                    if current and current.status.state in TERMINAL_STATES:
+                    is_terminal = bool(current and current.status.state in TERMINAL_STATES)
+                    if is_terminal:
                         try:
                             await self._event_bus.cleanup(task_id)
                         except Exception:
@@ -401,8 +402,12 @@ class WorkerAdapter:
                     # CancelRegistry cleanup runs on EVERY turn (not just terminal).
                     # The cancel scope holds a Redis Pub/Sub connection that must
                     # be released even for input_required/auth_required pauses.
+                    # On non-terminal turns pass release_key=False so the cancel
+                    # KEY itself is preserved — otherwise a request_cancel that
+                    # arrives between turns would be silently lost and the user
+                    # would have to wait for the force-cancel timeout.
                     try:
-                        await self._cancel_registry.cleanup(task_id)
+                        await self._cancel_registry.cleanup(task_id, release_key=is_terminal)
                     except Exception:
                         logger.exception("cancel_registry cleanup failed for %s", task_id)
 

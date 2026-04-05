@@ -122,7 +122,10 @@ class InMemoryStorage(Storage[ContextT]):
         """Create a brand-new task from an initial message.
 
         If ``idempotency_key`` is provided and a task with that key
-        already exists, return the existing task instead.
+        already exists, return the existing task instead.  On a
+        genuinely new insert the transient marker
+        ``_a2akit_just_created=True`` is set on the returned object
+        (not persisted) — see the ABC contract in ``storage/base.py``.
         """
         if idempotency_key:
             for t in self.tasks.values():
@@ -131,6 +134,7 @@ class InMemoryStorage(Storage[ContextT]):
                     and t.metadata
                     and t.metadata.get("_idempotency_key") == idempotency_key
                 ):
+                    # Idempotent hit: return without the just-created marker.
                     return copy.deepcopy(t)
 
         task_id = str(uuid.uuid4())
@@ -156,7 +160,13 @@ class InMemoryStorage(Storage[ContextT]):
         )
         self.tasks[task_id] = task
         self._versions[task_id] = 1
-        return task
+        # Return an independent copy — callers must not be able to mutate
+        # our stored state by holding on to the returned object.  Attach
+        # the transient just-created marker on the copy only so the stored
+        # task stays clean.
+        returned = copy.deepcopy(task)
+        returned.metadata = {**(returned.metadata or {}), "_a2akit_just_created": True}
+        return returned
 
     def _get_task_or_raise(self, task_id: str) -> Task:
         """Return the task or raise TaskNotFoundError."""

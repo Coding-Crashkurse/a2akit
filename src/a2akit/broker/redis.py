@@ -224,30 +224,36 @@ class RedisCancelRegistry(CancelRegistry):
         scope._startup_task = asyncio.create_task(scope._start())
         return scope
 
-    async def cleanup(self, task_id: str) -> None:
-        """DEL cancel key and clean up matching scopes."""
-        cancel_key = f"{self._key_prefix}cancel:{task_id}"
-        await self._redis.delete(cancel_key)
-        remaining: list[RedisCancelScope] = []
+    async def cleanup(self, task_id: str, *, release_key: bool = True) -> None:
+        """Release per-turn scope resources and optionally delete the cancel key.
+
+        When ``release_key=False`` (non-terminal turn end on
+        ``input_required``/``auth_required``), only the Pub/Sub
+        subscription and listener task are released.  The cancel key
+        is preserved so that a ``request_cancel`` arriving between
+        turns is still visible to the next turn.
+
+        When ``release_key=True`` (terminal / force-cancel), the
+        cancel key is also deleted.
+        """
+        if release_key:
+            cancel_key = f"{self._key_prefix}cancel:{task_id}"
+            await self._redis.delete(cancel_key)
+        # Separate matching scopes from the rest and REMOVE them from the
+        # tracking list BEFORE awaiting any cleanup. Otherwise, during the
+        # awaits below, a concurrent `on_cancel()` could append a new scope to
+        # `self._scopes`, and the subsequent `self._scopes = remaining`
+        # assignment would silently drop it, leaking pubsub connections.
+        to_clean: list[RedisCancelScope] = []
+        kept: list[RedisCancelScope] = []
         for scope in self._scopes:
             if scope._task_id == task_id:
-                if scope._startup_task and not scope._startup_task.done():
-                    scope._startup_task.cancel()
-                    with suppress(asyncio.CancelledError):
-                        await scope._startup_task
-                if scope._listener_task and not scope._listener_task.done():
-                    scope._listener_task.cancel()
-                    with suppress(asyncio.CancelledError):
-                        await scope._listener_task
-                await scope._cleanup_pubsub()
+                to_clean.append(scope)
             else:
-                remaining.append(scope)
-        self._scopes = remaining
-
-    async def close(self) -> None:
-        """Close the Redis connection if we own it."""
-        # Clean up any active scopes
-        for scope in self._scopes:
+                kept.append(scope)
+        # Mutate the list in place so concurrent appends are preserved.
+        self._scopes[:] = kept
+        for scope in to_clean:
             if scope._startup_task and not scope._startup_task.done():
                 scope._startup_task.cancel()
                 with suppress(asyncio.CancelledError):
@@ -257,7 +263,22 @@ class RedisCancelRegistry(CancelRegistry):
                 with suppress(asyncio.CancelledError):
                     await scope._listener_task
             await scope._cleanup_pubsub()
+
+    async def close(self) -> None:
+        """Close the Redis connection if we own it."""
+        # Drain the scopes list atomically before awaiting — see cleanup().
+        scopes = list(self._scopes)
         self._scopes.clear()
+        for scope in scopes:
+            if scope._startup_task and not scope._startup_task.done():
+                scope._startup_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await scope._startup_task
+            if scope._listener_task and not scope._listener_task.done():
+                scope._listener_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await scope._listener_task
+            await scope._cleanup_pubsub()
 
         if self._owns_connection:
             await self._redis.aclose()

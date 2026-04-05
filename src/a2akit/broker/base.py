@@ -95,19 +95,30 @@ class CancelRegistry(ABC):
         """Return a scope that signals when cancellation is requested."""
 
     @abstractmethod
-    async def cleanup(self, task_id: str) -> None:
-        """Release resources for a completed task.
+    async def cleanup(self, task_id: str, *, release_key: bool = True) -> None:
+        """Release resources for a task turn.
 
         MUST be idempotent. Multiple calls with the same task_id
         MUST NOT raise and MUST NOT affect resources for other tasks.
 
-        Called by WorkerAdapter at the end of normal task processing
+        Called by WorkerAdapter at the end of every turn (including
+        non-terminal pauses like ``input_required``/``auth_required``)
         and by TaskManager._force_cancel_after when the worker does
         not cooperate within the cancel timeout.  No other component
         may call this method.
 
+        When ``release_key`` is ``False`` (non-terminal turn end),
+        implementations MUST release per-turn resources (e.g. Pub/Sub
+        subscriptions, listener tasks) but MUST NOT delete the cancel
+        key itself.  This preserves cancel signals that arrive between
+        turns on tasks paused in ``input_required``/``auth_required``.
+
+        When ``release_key`` is ``True`` (terminal / force-cancel),
+        implementations MUST additionally delete the cancel key so
+        that subsequent tasks with the same id start fresh.
+
         Backends MUST implement this to avoid resource leaks
-        (e.g. Redis key cleanup).
+        (e.g. Redis Pub/Sub connections).
         """
 
 

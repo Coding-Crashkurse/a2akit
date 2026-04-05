@@ -113,6 +113,42 @@ async def test_startup_shutdown_lifecycle():
     await service.shutdown()
 
 
+async def test_shutdown_cancels_stuck_workers_before_closing_client():
+    """Regression: shutdown() used to call ``asyncio.wait(..., timeout=30)``
+    which returns on timeout without cancelling the workers. The workers
+    then continued to use ``http_client`` concurrently with
+    ``http_client.aclose()``, causing races.
+
+    After the fix, workers that exceed the grace period are force-cancelled
+    before the HTTP client is closed.
+    """
+    service = WebhookDeliveryService(
+        max_retries=1,
+        allow_http=True,
+        timeout=5.0,
+        shutdown_grace=0.1,
+    )
+    await service.startup()
+
+    # Inject a worker task that ignores the sentinel and never exits on its own.
+    stuck_started = asyncio.Event()
+
+    async def _stuck_worker():
+        stuck_started.set()
+        await asyncio.sleep(3600)
+
+    key = ("stuck-task", "stuck-cfg")
+    service._delivery_queues[key] = asyncio.Queue()
+    stuck_task = asyncio.create_task(_stuck_worker())
+    service._queue_workers[key] = stuck_task
+
+    await stuck_started.wait()
+    await service.shutdown()
+
+    # Worker was force-cancelled and HTTP client closed.
+    assert stuck_task.cancelled() or stuck_task.done()
+
+
 async def test_idle_timeout_cleans_up_queue():
     """Queue workers exit after idle_timeout when no new events arrive."""
     service = WebhookDeliveryService(max_retries=1, allow_http=True, timeout=5.0, idle_timeout=0.2)

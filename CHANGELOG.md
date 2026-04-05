@@ -4,6 +4,35 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.0.28] — 2026-04-05
+
+### Fixed
+- **Cancel signal lost on `input_required` turns** — `CancelRegistry.cleanup()`
+  now takes a `release_key: bool` flag. `WorkerAdapter` passes `release_key=False`
+  at the end of non-terminal turns so per-turn scope resources (Redis Pub/Sub
+  subscription, listener task) are released while the cancel **key** itself
+  is preserved. Previously a `request_cancel` that arrived between turns on
+  an `input_required` task was silently dropped and the user had to wait
+  for the force-cancel timeout (up to 60s) before the task stopped. Terminal
+  turns and force-cancel still perform a full cleanup.
+- **Double-enqueue on idempotent create_task retry** — when a client retried
+  (or double-submitted) a message before the worker had picked up the
+  original task, `TaskManager._submit_task` used a state-based heuristic
+  (`state == submitted`) to decide whether to enqueue. Both a genuine insert
+  and an idempotent hit were in `submitted` state, so both were enqueued —
+  on multi-worker Redis deployments two workers could process the same task
+  in parallel with duplicate side effects. Storage backends now signal
+  genuine inserts via a transient `_a2akit_just_created=True` marker in
+  the returned Task's metadata (not persisted); `TaskManager` pops it and
+  uses it as the authoritative `should_enqueue` signal.
+- **WebhookDeliveryService shutdown race** — `shutdown()` used
+  `asyncio.wait(timeout=30)` which returns on timeout without cancelling
+  workers, so lingering delivery workers would race against
+  `http_client.aclose()` and crash mid-request. Workers that exceed the
+  grace period are now force-cancelled before the HTTP client is closed.
+  The grace period is configurable via the new `shutdown_grace` parameter
+  (default 30s).
+
 ## [0.0.27] — 2026-04-04
 
 ### Fixed

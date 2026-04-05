@@ -6,6 +6,7 @@ import asyncio
 import logging
 import uuid
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from a2a.types import (
@@ -17,6 +18,7 @@ from a2a.types import (
     Role,
     Task,
     TaskState,
+    TaskStatus,
     TaskStatusUpdateEvent,
     TextPart,
 )
@@ -189,9 +191,17 @@ class TaskManager:
             task = await self.storage.create_task(
                 context_id, message, idempotency_key=message.message_id
             )
-            # Idempotent duplicate: create_task returns the existing task.
-            # Only enqueue if this is a genuinely new submission.
-            return task, task.status.state == TaskState.submitted
+            # Storage signals genuine insert vs idempotent hit via a
+            # transient metadata marker (see storage/base.py contract).
+            # Pop it here so it never leaks further into the pipeline.
+            # A state-based check (``state == submitted``) is insufficient
+            # because a brand-new task AND an idempotent hit on a task
+            # whose worker has not yet picked it up are both in the
+            # submitted state — that would cause a double enqueue on
+            # client retries, and on multi-worker Redis deployments two
+            # workers could process the same task in parallel.
+            just_created = bool(task.metadata and task.metadata.pop("_a2akit_just_created", False))
+            return task, just_created
 
         task = await self._load_and_validate(message)
         # Idempotency: skip if this message was already appended (client retry).
@@ -206,8 +216,12 @@ class TaskManager:
         # Pass the current version for OCC — prevents two concurrent
         # follow-ups from silently overwriting each other's history.
         version = await self.storage.get_version(task.id)
+        # Route through the EventEmitter so lifecycle hooks, SSE subscribers,
+        # and push notifications see the follow-up state transition. Writing
+        # directly via storage.update_task here would silently skip all three.
+        emitter = self.emitter or DefaultEventEmitter(self.event_bus, self.storage)
         try:
-            await self.storage.update_task(
+            await emitter.update_task(
                 task.id,
                 state=new_state,
                 messages=[bound_message],
@@ -227,6 +241,24 @@ class TaskManager:
             if reloaded and reloaded.status.state in TERMINAL_STATES:
                 raise TaskTerminalStateError("task is terminal") from None
             raise
+        # Broadcast the transition so SSE subscribers, hooks, and push
+        # notifications see the state change (this is the mirror image of
+        # what WorkerAdapter does after transitioning submitted -> working).
+        if new_state is not None:
+            status = TaskStatus(
+                state=new_state,
+                timestamp=datetime.now(UTC).isoformat(),
+            )
+            await emitter.send_event(
+                task.id,
+                TaskStatusUpdateEvent(
+                    kind="status-update",
+                    task_id=task.id,
+                    context_id=task.context_id,
+                    status=status,
+                    final=False,
+                ),
+            )
         # Re-load to return the updated Task object.
         updated = await self.storage.load_task(task.id)
         if updated is None:
@@ -301,13 +333,19 @@ class TaskManager:
 
         # Idempotent duplicate follow-up — return current state, don't re-enqueue
         if not should_enqueue:
-            history_len = getattr(getattr(params, "configuration", None), "history_length", None)
-            latest = await self.storage.load_task(task.id, history_length=history_len)
-            if latest is not None:
-                reply = _find_direct_reply(latest)
+            # Load FULL task first so we can detect a direct reply even when
+            # the client passed history_length=0. Trimming before the lookup
+            # would hide the reply message.
+            latest_full = await self.storage.load_task(task.id)
+            if latest_full is not None:
+                reply = _find_direct_reply(latest_full)
                 if reply is not None:
                     return reply
-            return latest or task
+            history_len = getattr(getattr(params, "configuration", None), "history_length", None)
+            if history_len is not None:
+                trimmed = await self.storage.load_task(task.id, history_length=history_len)
+                return trimmed or latest_full or task
+            return latest_full or task
 
         # Inline push notification config (A2A spec)
         if params.configuration and hasattr(params.configuration, "push_notification_config"):

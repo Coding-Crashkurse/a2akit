@@ -42,6 +42,7 @@ class WebhookDeliveryService:
         allowed_hosts: set[str] | None = None,
         blocked_hosts: set[str] | None = None,
         idle_timeout: float = 300.0,
+        shutdown_grace: float = 30.0,
     ) -> None:
         self._max_retries = max_retries
         self._retry_base_delay = retry_base_delay
@@ -51,6 +52,7 @@ class WebhookDeliveryService:
         self._allowed_hosts = allowed_hosts
         self._blocked_hosts = blocked_hosts
         self._idle_timeout = idle_timeout
+        self._shutdown_grace = shutdown_grace
         self._http_client: httpx.AsyncClient | None = None
         # Per-config delivery queues ensure sequential ordering
         # Key: (task_id, config_id)
@@ -66,11 +68,32 @@ class WebhookDeliveryService:
         )
 
     async def shutdown(self) -> None:
-        """Gracefully shut down all delivery workers."""
+        """Gracefully shut down all delivery workers.
+
+        Workers are signaled via sentinels first.  Any worker that does
+        not finish within the grace period is force-cancelled so the
+        HTTP client can be closed safely — ``asyncio.wait(timeout=...)``
+        alone returns on timeout but leaves tasks running, which would
+        race against ``http_client.aclose()`` below.
+        """
         for queue in self._delivery_queues.values():
             queue.put_nowait(None)  # Sentinel
         if self._queue_workers:
-            await asyncio.wait(self._queue_workers.values(), timeout=30.0)
+            workers = list(self._queue_workers.values())
+            try:
+                await asyncio.wait_for(
+                    asyncio.gather(*workers, return_exceptions=True),
+                    timeout=self._shutdown_grace,
+                )
+            except TimeoutError:
+                logger.warning(
+                    "Webhook delivery workers did not finish within %.1fs; cancelling",
+                    self._shutdown_grace,
+                )
+                for w in workers:
+                    if not w.done():
+                        w.cancel()
+                await asyncio.gather(*workers, return_exceptions=True)
         if self._http_client:
             await self._http_client.aclose()
 

@@ -185,10 +185,10 @@ async def _handle_message_send(
     if not msg.message_id or not msg.message_id.strip():
         return _error_response(req_id, INVALID_PARAMS, "messageId is required")
 
-    tm = _get_tm(request)
     middlewares: list[A2AMiddleware] = getattr(request.app.state, "middlewares", [])
 
     try:
+        tm = _get_tm(request)
         envelope = RequestEnvelope(params=send_params)
         for mw in middlewares:
             await mw.before_dispatch(envelope, request)
@@ -234,10 +234,10 @@ async def _handle_message_send_stream(
     if not msg.message_id or not msg.message_id.strip():
         return _error_response(req_id, INVALID_PARAMS, "messageId is required")
 
-    tm = _get_tm(request)
     middlewares: list[A2AMiddleware] = getattr(request.app.state, "middlewares", [])
 
     try:
+        tm = _get_tm(request)
         envelope = RequestEnvelope(params=send_params)
         for mw in middlewares:
             await mw.before_dispatch(envelope, request)
@@ -289,9 +289,9 @@ async def _handle_tasks_get(request: Request, req_id: Any, params: dict[str, Any
         return _error_response(req_id, INVALID_PARAMS, "Missing 'id' in params")
 
     history_length = params.get("historyLength")
-    tm = _get_tm(request)
 
     try:
+        tm = _get_tm(request)
         t = await tm.get_task(task_id, history_length)
         if not t:
             return _error_response(req_id, TASK_NOT_FOUND, "Task not found")
@@ -304,8 +304,6 @@ async def _handle_tasks_list(
     request: Request, req_id: Any, params: dict[str, Any]
 ) -> JSONResponse:
     """Handle tasks/list."""
-    tm = _get_tm(request)
-
     try:
         query = ListTasksQuery(
             context_id=params.get("contextId"),
@@ -320,6 +318,7 @@ async def _handle_tasks_list(
         return _error_response(req_id, INVALID_PARAMS, "Invalid params for tasks/list")
 
     try:
+        tm = _get_tm(request)
         result = await tm.list_tasks(query)
         result.tasks = [_sanitize_task_for_client(t) for t in result.tasks]
         return _result_response(
@@ -338,9 +337,8 @@ async def _handle_tasks_cancel(
     if not task_id:
         return _error_response(req_id, INVALID_PARAMS, "Missing 'id' in params")
 
-    tm = _get_tm(request)
-
     try:
+        tm = _get_tm(request)
         result = await tm.cancel_task(task_id)
         return _result_response(req_id, _serialize(result))
     except Exception as exc:
@@ -357,9 +355,9 @@ async def _handle_tasks_resubscribe(request: Request, req_id: Any, params: dict[
         return _error_response(req_id, INVALID_PARAMS, "Missing 'id' in params")
 
     after_event_id = params.get("lastEventId")
-    tm = _get_tm(request)
 
     try:
+        tm = _get_tm(request)
         agen = tm.subscribe_task(task_id, after_event_id=after_event_id)
         try:
             first_pair = await anext(agen)

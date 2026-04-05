@@ -215,6 +215,17 @@ class Storage(ABC, Generic[ContextT]):
         InMemoryStorage uses an O(N) scan which is acceptable for
         development but MUST NOT be used as a template for production
         backends.
+
+        **Just-created marker:** When a genuinely new row is inserted
+        (not an idempotent hit), implementations MUST set the transient
+        metadata key ``_a2akit_just_created = True`` on the **returned**
+        Task object.  This key MUST NOT be persisted — it is a signal
+        to the caller (``TaskManager``) so the caller can distinguish
+        "I just created this" from "I found an existing task via the
+        idempotency key".  On an idempotent hit, the marker MUST NOT
+        be present.  ``TaskManager`` pops the key immediately after
+        reading it, and ``_sanitize_task_for_client`` strips any
+        leftover ``_``-prefixed keys before serializing to clients.
         """
 
     @abstractmethod

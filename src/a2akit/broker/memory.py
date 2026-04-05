@@ -61,9 +61,16 @@ class InMemoryCancelRegistry(CancelRegistry):
         """Return a scope that signals when cancellation is requested."""
         return AnyioCancelScope(self._cancel_events.setdefault(task_id, anyio.Event()))
 
-    async def cleanup(self, task_id: str) -> None:
-        """Release resources for a completed task."""
-        self._cancel_events.pop(task_id, None)
+    async def cleanup(self, task_id: str, *, release_key: bool = True) -> None:
+        """Release resources for a task turn.
+
+        The InMemory backend holds no per-turn resources (the cancel
+        event is the only state), so ``release_key=False`` is a no-op.
+        When ``release_key=True`` the cancel event is dropped so the
+        next task with the same id starts fresh.
+        """
+        if release_key:
+            self._cancel_events.pop(task_id, None)
 
 
 @dataclass
