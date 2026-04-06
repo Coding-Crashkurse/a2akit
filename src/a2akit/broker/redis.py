@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import socket
+import time
 import uuid
 from contextlib import suppress
 from typing import TYPE_CHECKING, Any, Self
@@ -127,6 +128,12 @@ class RedisCancelScope(CancelScope):
             # Leave the event unset so the worker runs normally.  If a real
             # cancel request arrives, the force-cancel timeout in
             # TaskManager._force_cancel_after is the safety net.
+            #
+            # Reset _started so a subsequent call (e.g. from wait()) can
+            # retry the subscription if Redis recovers.  Without this,
+            # a transient Redis failure permanently disables cooperative
+            # cancellation for this task.
+            self._started = False
             logger.warning(
                 "Failed to subscribe to cancel channel for %s; "
                 "cancel detection degraded to force-cancel timeout",
@@ -171,7 +178,10 @@ class RedisCancelScope(CancelScope):
         """Block until cancellation is requested."""
         if self._startup_task is not None:
             await self._startup_task  # propagate startup errors instead of hanging
-        elif not self._started:
+        # If _start() failed (transient Redis error), _started is still
+        # False even though _startup_task is done.  Retry the subscription
+        # so cooperative cancellation recovers when Redis comes back.
+        if not self._started:
             await self._start()
         await self._event.wait()
 
@@ -337,6 +347,13 @@ class RedisOperationHandle(OperationHandle):
         """XACK original + XADD new entry with attempt+1.
 
         If max retries are exhausted, move to DLQ instead.
+
+        When ``delay_seconds > 0``, a ``not_before`` wall-clock
+        timestamp is embedded in the re-added message.  The consumer
+        (``receive_task_operations``) sleeps until the timestamp has
+        passed before yielding the handle, giving real exponential
+        backoff without breaking the at-least-once guarantee (the
+        message is always durably in the stream).
         """
         next_attempt = self._attempt + 1
         if next_attempt > self._max_retries:
@@ -354,19 +371,20 @@ class RedisOperationHandle(OperationHandle):
             await self._clear_crash_count()
             return
 
-        # NOTE: delay_seconds is accepted for API compatibility but NOT
-        # enforced via sleep here — sleeping would hold the caller's
-        # semaphore slot, starving the worker.  The re-added message is
-        # immediately available; Redis XAUTOCLAIM's min_idle_time provides
-        # natural backoff for repeatedly failing messages.
+        readd_fields: dict[bytes, bytes] = {
+            b"op": self._serialized_op,
+            b"attempt": str(next_attempt).encode(),
+        }
+        if delay_seconds > 0:
+            readd_fields[b"not_before"] = str(time.time() + delay_seconds).encode()
 
-        # ACK original, re-add with incremented attempt
+        # Atomic ACK + re-add: the message is always durably in the
+        # stream.  If the process crashes before the consumer reads the
+        # re-added entry, XAUTOCLAIM will recover it from the PEL of
+        # the *new* entry (not the original, which was ACKed here).
         async with self._redis.pipeline(transaction=False) as pipe:
             pipe.xack(self._stream_key, self._group_name, self._msg_id)
-            pipe.xadd(
-                self._stream_key,
-                {b"op": self._serialized_op, b"attempt": str(next_attempt).encode()},
-            )
+            pipe.xadd(self._stream_key, readd_fields)
             await pipe.execute()
         await self._clear_crash_count()
 
@@ -414,7 +432,6 @@ class RedisBroker(Broker):
         self._url = url or s.redis_url
         self._pool = pool
         self._redis: aioredis.Redis | None = None
-        self._claim_task: asyncio.Task[None] | None = None
         self._claim_cursor: str = "0-0"
 
     @property
@@ -462,12 +479,7 @@ class RedisBroker(Broker):
         exc_value: BaseException | None,
         traceback: TracebackType | None,
     ) -> None:
-        """Cancel claim task, delete consumer, close connection."""
-        if self._claim_task and not self._claim_task.done():
-            self._claim_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await self._claim_task
-
+        """Delete consumer, close connection."""
         if self._redis:
             try:
                 await self._redis.xgroup_delconsumer(
@@ -548,6 +560,16 @@ class RedisBroker(Broker):
 
             for _stream_name, messages in entries:
                 for msg_id, fields in messages:
+                    # Respect retry backoff: if the message carries a
+                    # not_before timestamp (set by nack with delay), wait
+                    # until it has passed.  The message is durably in the
+                    # stream so a crash during the sleep is recovered by
+                    # XAUTOCLAIM — no data loss.
+                    not_before_raw = fields.get(b"not_before")
+                    if not_before_raw:
+                        remaining = float(not_before_raw) - time.time()
+                        if remaining > 0:
+                            await asyncio.sleep(remaining)
                     try:
                         op = _deserialize_operation(fields)
                         attempt = int(fields.get(b"attempt", b"1"))

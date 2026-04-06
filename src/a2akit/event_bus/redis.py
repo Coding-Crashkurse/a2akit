@@ -200,8 +200,27 @@ class RedisEventBus(EventBus):
                 await pubsub.aclose()
             raise
 
+        # When no after_event_id is given, capture the stream position NOW
+        # (before the caller loads the DB snapshot).  This prevents both:
+        # - duplication: events between subscribe and snapshot appear in
+        #   both the snapshot and the gap-fill;
+        # - loss: events between snapshot load and _iter_events start
+        #   could be skipped if xrevrange ran too late.
+        snapshot_stream_id: str | None = None
+        if after_event_id is None:
+            stream_key = f"{self._stream_prefix}{task_id}"
+            try:
+                last_msgs = await self._r.xrevrange(stream_key, count=1)
+                snapshot_stream_id = (
+                    last_msgs[0][0].decode() if last_msgs and last_msgs[0] else "0-0"
+                )
+            except Exception:
+                snapshot_stream_id = "0-0"
+
         try:
-            yield self._iter_events(pubsub, task_id, after_event_id)
+            yield self._iter_events(
+                pubsub, task_id, after_event_id, snapshot_stream_id=snapshot_stream_id
+            )
         finally:
             try:
                 await pubsub.unsubscribe(channel)
@@ -214,15 +233,22 @@ class RedisEventBus(EventBus):
         pubsub: aioredis.client.PubSub,
         task_id: str,
         after_event_id: str | None,
+        *,
+        snapshot_stream_id: str | None = None,
     ) -> AsyncIterator[tuple[str | None, StreamEvent]]:
-        """Replay → gap-fill → live Pub/Sub."""
+        """Replay → gap-fill → live Pub/Sub.
+
+        ``snapshot_stream_id`` is the stream position captured at
+        subscribe time (before the caller's DB snapshot).  Using it
+        here instead of a fresh ``xrevrange`` prevents event loss and
+        duplication in the gap between subscribe and iteration start.
+        """
         stream_key = f"{self._stream_prefix}{task_id}"
 
         if after_event_id is None:
-            # No replay — start from current stream end to avoid
-            # replaying historical events that the initial snapshot covers.
-            last_msgs = await self._r.xrevrange(stream_key, count=1)
-            last_seen_id = last_msgs[0][0].decode() if last_msgs and last_msgs[0] else "0-0"
+            # Use the bookmark captured at subscribe time (before the
+            # caller loaded the DB snapshot) rather than querying now.
+            last_seen_id = snapshot_stream_id or "0-0"
         else:
             last_seen_id = after_event_id
 

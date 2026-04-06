@@ -133,8 +133,14 @@ class InMemoryEventBus(EventBus):
         )
         async with self._subscriber_lock:
             self._subs.setdefault(task_id, []).append(send_stream)
+        # Capture the current event counter BEFORE the caller loads the
+        # DB snapshot.  Events with ID <= this value are already reflected
+        # in the snapshot the caller is about to read — skipping them in
+        # the live phase prevents the duplication that occurs when an event
+        # is published between subscribe() and load_task().
+        snapshot_id = self._event_counters.get(task_id, 0)
         try:
-            yield self._iter_events(recv_stream, task_id, after_event_id)
+            yield self._iter_events(recv_stream, task_id, after_event_id, snapshot_id=snapshot_id)
         finally:
             async with self._subscriber_lock:
                 lst = self._subs.get(task_id)
@@ -151,14 +157,23 @@ class InMemoryEventBus(EventBus):
         recv_stream: MemoryObjectReceiveStream[tuple[str, StreamEvent]],
         task_id: str,
         after_event_id: str | None,
+        *,
+        snapshot_id: int = 0,
     ) -> AsyncIterator[tuple[str | None, StreamEvent]]:
         """Replay buffered events (if requested), then yield live events.
 
         Tracks ``last_yielded_id`` to skip duplicates that can occur when
         an event is published between subscriber registration and the
         replay buffer snapshot.
+
+        ``snapshot_id`` is the event counter captured at subscribe time.
+        For initial subscriptions (no ``after_event_id``), events with
+        ID ≤ ``snapshot_id`` are already covered by the caller's DB
+        snapshot and are skipped to prevent duplication.
         """
-        last_yielded_id = 0
+        # For initial subscriptions, use the snapshot bookmark so events
+        # already reflected in the DB snapshot are not yielded again.
+        last_yielded_id = 0 if after_event_id is not None else snapshot_id
 
         # Replay phase: yield buffered events with ID > after_event_id.
         if after_event_id is not None:

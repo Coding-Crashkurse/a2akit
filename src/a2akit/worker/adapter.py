@@ -382,22 +382,52 @@ class WorkerAdapter:
                             raise
                 except TaskTerminalStateError:
                     logger.info("Task %s reached terminal state during processing", task_id)
-                except Exception as exc:
-                    logger.exception("Worker error for task %s", task_id)
-                    if span:
-                        span.record_exception(exc)
-                        from opentelemetry.trace import StatusCode
-
-                        span.set_status(StatusCode.ERROR, str(exc))
+                    # Drain buffered artifacts that were already sent via SSE
+                    # but not yet flushed to storage.  Write them as an
+                    # artifact-only update (state=None bypasses the terminal
+                    # guard) so polling clients see them too.
                     pending = await self._drain_pending_artifacts(ctx, task_id)
-                    await self._mark_failed(
-                        emitter,
-                        self._storage,
-                        task_id,
-                        context_id,
-                        str(exc),
-                        artifacts=pending,
-                    )
+                    if pending:
+                        try:
+                            await emitter.update_task(task_id, artifacts=pending)
+                        except Exception:
+                            logger.warning(
+                                "Failed to flush pending artifacts for terminal task %s",
+                                task_id,
+                            )
+                except Exception as exc:
+                    if ctx.turn_ended:
+                        # Exception after a successful lifecycle call (e.g.
+                        # cleanup code after complete()).  The task state is
+                        # correct — log it but don't pollute telemetry with
+                        # a false error or attempt a redundant _mark_failed.
+                        logger.warning(
+                            "Post-lifecycle exception for task %s (ignored, "
+                            "task already terminal): %s",
+                            task_id,
+                            exc,
+                        )
+                        if span:
+                            span.add_event(
+                                "post_lifecycle_exception",
+                                {"exception.message": str(exc)},
+                            )
+                    else:
+                        logger.exception("Worker error for task %s", task_id)
+                        if span:
+                            span.record_exception(exc)
+                            from opentelemetry.trace import StatusCode
+
+                            span.set_status(StatusCode.ERROR, str(exc))
+                        pending = await self._drain_pending_artifacts(ctx, task_id)
+                        await self._mark_failed(
+                            emitter,
+                            self._storage,
+                            task_id,
+                            context_id,
+                            str(exc),
+                            artifacts=pending,
+                        )
                 else:
                     if span:
                         loaded = await self._storage.load_task(task_id)
@@ -417,7 +447,11 @@ class WorkerAdapter:
                     except Exception:
                         logger.warning("Failed to load task %s during cleanup", task_id)
                         current = None
-                    is_terminal = bool(current and current.status.state in TERMINAL_STATES)
+                    # Deleted tasks (current is None) are treated as terminal for
+                    # cleanup purposes — there are no subscribers or cancel keys
+                    # to preserve, and skipping cleanup would leak event-bus
+                    # resources (e.g. Redis TTL-refresh) and cancel-registry keys.
+                    is_terminal = current is None or bool(current.status.state in TERMINAL_STATES)
                     if is_terminal:
                         try:
                             await self._event_bus.cleanup(task_id)
@@ -502,13 +536,28 @@ class WorkerAdapter:
                 expected_version=version,
             )
         except TaskTerminalStateError:
+            # State transition rejected — task already terminal.
+            # Write artifacts separately (state=None bypasses guard)
+            # so buffered artifacts aren't silently lost.
+            if artifacts:
+                try:
+                    await emitter.update_task(task_id, artifacts=artifacts)
+                except Exception:
+                    logger.warning("Artifact-only fallback failed for task %s", task_id)
             return
         except ConcurrencyError:
             # Another writer changed the task — retry once if still non-terminal.
+            # Capture version before load to maintain TOCTOU-safe ordering.
+            version = await storage.get_version(task_id)
             task = await storage.load_task(task_id)
             if task is None or task.status.state in TERMINAL_STATES:
+                # Task is terminal — write artifacts separately.
+                if artifacts:
+                    try:
+                        await emitter.update_task(task_id, artifacts=artifacts)
+                    except Exception:
+                        logger.warning("Artifact-only fallback failed for task %s", task_id)
                 return
-            version = await storage.get_version(task_id)
             try:
                 await emitter.update_task(
                     task_id,
@@ -522,6 +571,12 @@ class WorkerAdapter:
                 logger.warning(
                     "mark_failed retry failed for task %s, task may have been modified", task_id
                 )
+                # Last resort: write artifacts even if state transition failed.
+                if artifacts:
+                    try:
+                        await emitter.update_task(task_id, artifacts=artifacts)
+                    except Exception:
+                        logger.warning("Artifact-only fallback failed for task %s", task_id)
                 return
         status = TaskStatus(
             state=TaskState.failed,

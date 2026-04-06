@@ -56,6 +56,9 @@ async def cancel_task_in_storage(
     ``artifacts`` are written atomically with the cancel transition so
     buffered artifacts from a mid-run cancel are not lost.
     """
+    # Capture OCC version BEFORE loading state to close the TOCTOU
+    # window (see _submit_task for the full explanation).
+    version = await storage.get_version(task_id)
     task = await storage.load_task(task_id)
     if task is None:
         return
@@ -74,7 +77,6 @@ async def cancel_task_in_storage(
         task_id=task_id,
         context_id=resolved_ctx,
     )
-    version = await storage.get_version(task_id)
     try:
         await emitter.update_task(
             task_id,
@@ -87,10 +89,19 @@ async def cancel_task_in_storage(
     except (ConcurrencyError, TaskTerminalStateError):
         # Another writer changed the task between our load and write.
         # Re-load and retry once if the task is still non-terminal.
+        # Capture version before load to maintain TOCTOU-safe ordering.
+        version = await storage.get_version(task_id)
         task = await storage.load_task(task_id)
         if task is None or task.status.state in TERMINAL_STATES:
+            # Task is terminal — write artifacts separately (state=None
+            # bypasses the terminal guard) so buffered artifacts from
+            # a mid-run cancel aren't silently lost.
+            if artifacts:
+                try:
+                    await emitter.update_task(task_id, artifacts=artifacts)
+                except Exception:
+                    logger.warning("Artifact-only fallback failed for task %s", task_id)
             return
-        version = await storage.get_version(task_id)
         try:
             await emitter.update_task(
                 task_id,
@@ -102,6 +113,12 @@ async def cancel_task_in_storage(
             )
         except (ConcurrencyError, TaskTerminalStateError):
             logger.warning("Cancel retry failed for task %s, task may have been modified", task_id)
+            # Last resort: write artifacts even if state transition failed.
+            if artifacts:
+                try:
+                    await emitter.update_task(task_id, artifacts=artifacts)
+                except Exception:
+                    logger.warning("Artifact-only fallback failed for task %s", task_id)
             return
 
     status = TaskStatus(

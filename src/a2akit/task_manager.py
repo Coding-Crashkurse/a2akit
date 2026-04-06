@@ -203,6 +203,17 @@ class TaskManager:
             just_created = bool(task.metadata and task.metadata.pop("_a2akit_just_created", False))
             return task, just_created
 
+        # Capture the OCC version BEFORE loading and validating state.
+        # This closes a TOCTOU window: if a concurrent writer commits
+        # between our version read and our update_task write,
+        # expected_version will be stale and the storage layer will
+        # raise ConcurrencyError (correct rejection).  Fetching the
+        # version AFTER validation (the old order) allowed a concurrent
+        # writer to slip in a newer version, causing our write to
+        # succeed despite validating against stale state — two
+        # concurrent follow-ups could both pass the input_required
+        # check and both succeed instead of one getting rejected.
+        version = await self.storage.get_version(message.task_id)
         task = await self._load_and_validate(message)
         # Idempotency: skip if this message was already appended (client retry).
         if task.history and any(m.message_id == message.message_id for m in task.history):
@@ -213,9 +224,6 @@ class TaskManager:
             update={"context_id": message.context_id or task.context_id}
         )
         new_state = self._compute_state_transition(task)
-        # Pass the current version for OCC — prevents two concurrent
-        # follow-ups from silently overwriting each other's history.
-        version = await self.storage.get_version(task.id)
         # Route through the EventEmitter so lifecycle hooks, SSE subscribers,
         # and push notifications see the follow-up state transition. Writing
         # directly via storage.update_task here would silently skip all three.

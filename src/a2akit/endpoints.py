@@ -225,16 +225,23 @@ async def _enforce_middleware_pipeline(
 async def _stream_setup(
     request: Request,
     params: MessageSendParams,
-) -> tuple[
-    tuple[str | None, StreamEvent],
-    AsyncGenerator[tuple[str | None, StreamEvent], None],
-    list[A2AMiddleware],
-    RequestEnvelope,
+) -> AsyncGenerator[
+    tuple[
+        tuple[str | None, StreamEvent],
+        AsyncGenerator[tuple[str | None, StreamEvent], None],
+        list[A2AMiddleware],
+        RequestEnvelope,
+    ],
+    None,
 ]:
-    """Dependency: validate, run middleware, and fetch the first stream event.
+    """Yield-based dependency: validate, run middleware, fetch the first event.
 
-    Runs in normal async context so that exceptions produce proper
-    HTTP error responses instead of being wrapped in ExceptionGroup.
+    Uses ``yield`` instead of ``return`` so that FastAPI's dependency
+    cleanup guarantees the ``finally`` block runs even if the route
+    handler is never reached (e.g. client disconnect during response
+    header preparation).  This prevents middleware resource leaks
+    (OpenTelemetry spans, auth tokens) when the gap between dependency
+    return and route handler execution is interrupted.
     """
     _check_streaming(request)
     params = _validate_ids(params)
@@ -243,6 +250,7 @@ async def _stream_setup(
 
     envelope = RequestEnvelope(params=params)
     started: list[A2AMiddleware] = []
+    agen: AsyncGenerator[tuple[str | None, StreamEvent], None] | None = None
     try:
         for mw in middlewares:
             await mw.before_dispatch(envelope, request)
@@ -254,6 +262,7 @@ async def _stream_setup(
             first_pair = await anext(agen)
         except BaseException:
             await agen.aclose()
+            agen = None
             raise
     except BaseException:
         # Run after_dispatch only for middlewares that successfully
@@ -261,18 +270,35 @@ async def _stream_setup(
         for mw in reversed(started):
             await mw.after_dispatch(envelope)
         raise
-    return first_pair, agen, middlewares, envelope
+
+    try:
+        yield first_pair, agen, started, envelope
+    finally:
+        # Cleanup: close the event generator and run after_dispatch.
+        # This runs even if the route handler was never entered.
+        try:
+            if agen is not None:
+                await agen.aclose()
+        finally:
+            for mw in reversed(started):
+                await mw.after_dispatch(envelope)
 
 
 async def _subscribe_setup(
     request: Request,
     task_id: str = Path(),
     last_event_id: str | None = Header(None, alias="Last-Event-ID"),
-) -> tuple[tuple[str | None, StreamEvent], AsyncGenerator[tuple[str | None, StreamEvent], None]]:
-    """Dependency: look up task, validate state, and fetch the first event.
+) -> AsyncGenerator[
+    tuple[tuple[str | None, StreamEvent], AsyncGenerator[tuple[str | None, StreamEvent], None]],
+    None,
+]:
+    """Yield-based dependency: look up task, validate state, fetch first event.
 
-    Runs in normal async context so that TaskNotFoundError and
-    UnsupportedOperationError produce proper HTTP error responses.
+    Uses ``yield`` (like ``_stream_setup``) so FastAPI's dependency
+    cleanup guarantees ``agen.aclose()`` runs even if the client
+    disconnects before the route handler iterates the SSE generator.
+    With a plain ``return``, an early disconnect would leak the
+    underlying Redis Pub/Sub connection held by ``agen``.
     """
     _check_streaming(request)
     tm = _get_tm(request)
@@ -282,7 +308,11 @@ async def _subscribe_setup(
     except BaseException:
         await agen.aclose()
         raise
-    return first_pair, agen
+
+    try:
+        yield first_pair, agen
+    finally:
+        await agen.aclose()
 
 
 def build_a2a_router() -> APIRouter:
@@ -341,12 +371,13 @@ def build_a2a_router() -> APIRouter:
         where exceptions produce proper HTTP error responses.
 
         This generator body runs inside FastAPI's SSE producer TaskGroup
-        and only contains yield statements.
+        and only contains yield statements.  Middleware cleanup and
+        generator close are handled by ``_stream_setup``'s finally block.
 
         SSE ``id:`` fields use the event-bus-assigned ID (not a local
         counter) so that ``Last-Event-ID`` reconnection maps correctly.
         """
-        first_pair, agen, middlewares, envelope = setup
+        first_pair, agen, _middlewares, _envelope = setup
         try:
             eid, first_event = first_pair
             if not isinstance(first_event, DirectReply):
@@ -357,12 +388,6 @@ def build_a2a_router() -> APIRouter:
                 yield ServerSentEvent(raw_data=_wrap_stream_event(ev), id=eid)
         except Exception:
             logger.exception("SSE stream aborted")
-        finally:
-            try:
-                await agen.aclose()
-            finally:
-                for mw in reversed(middlewares):
-                    await mw.after_dispatch(envelope)
 
     @router.get("/v1/tasks/{task_id}", tags=["Tasks"])
     async def tasks_get(
@@ -446,8 +471,6 @@ def build_a2a_router() -> APIRouter:
                 yield ServerSentEvent(raw_data=_wrap_stream_event(ev), id=eid)
         except Exception:
             logger.exception("SSE subscribe stream aborted")
-        finally:
-            await agen.aclose()
 
     @router.post("/v1/tasks/{task_id}/pushNotificationConfigs", tags=["Push Notifications"])
     async def push_config_set(request: Request, task_id: str = Path()) -> JSONResponse:
