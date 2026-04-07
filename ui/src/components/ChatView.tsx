@@ -205,7 +205,18 @@ export function ChatView({ card }: Props) {
       await sendStreamingRequest({ agentUrl, jsonRpc, params }, {
         onStatus(text, state) {
           lastState = state || lastState;
-          addMsg("status", text);
+          if (agentMsgId) {
+            const id = agentMsgId;
+            const st = lastState;
+            const t = text || agentText;
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === id ? { ...m, text: t || m.text, state: st } : m,
+              ),
+            );
+          } else if (text) {
+            agentMsgId = addMsg("agent", text, lastState);
+          }
         },
         onArtifactChunk(chunk, state) {
           lastState = state || lastState;

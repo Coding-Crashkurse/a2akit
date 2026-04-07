@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.0.31] — 2026-04-07
+
+### Fixed
+- **Debug UI: streaming status updates rendered as separate chat messages** —
+  `handleStreaming()` in the React Debug UI called `addMsg("status", text)` for
+  every SSE `status-update` event, creating individual badge elements in the chat
+  instead of updating the existing agent message's state. Status updates now
+  update the agent message in-place (text + state badge), matching the behavior
+  of the non-streaming (blocking) handler.
+
 ## [0.0.30] — 2026-04-06
 
 ### Fixed
