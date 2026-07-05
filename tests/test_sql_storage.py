@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import uuid
 
+import anyio
 import pytest
 from a2a.types import (
     Artifact,
@@ -17,6 +19,7 @@ from a2a_pydantic.v10 import Role as V10Role
 from a2a_pydantic.v10 import TaskState
 
 from a2akit.storage.base import (
+    META_TENANT_KEY,
     ArtifactWrite,
     ConcurrencyError,
     ListTasksQuery,
@@ -33,6 +36,22 @@ def _msg(text: str = "hello", msg_id: str | None = None) -> Message:
         parts=[Part(root=TextPart(text=text))],
         message_id=msg_id or str(uuid.uuid4()),
     )
+
+
+def _ts(task) -> str:
+    """Return a task's status timestamp as an ISO string."""
+    ts = task.status.timestamp
+    root = getattr(ts, "root", ts)
+    return root.isoformat() if hasattr(root, "isoformat") else str(root)
+
+
+def _sqlite_storage(url: str = "sqlite+aiosqlite://"):
+    """Create a SQLiteStorage or skip when aiosqlite is missing."""
+    try:
+        from a2akit.storage.sqlite import SQLiteStorage
+    except ImportError:
+        pytest.skip("aiosqlite not installed")
+    return SQLiteStorage(url)
 
 
 def _artifact(artifact_id: str = "art-1", text: str = "content") -> Artifact:
@@ -307,6 +326,57 @@ async def test_list_tasks_exclude_artifacts(sql_storage):
     assert not result.tasks[0].artifacts
 
 
+async def test_list_tasks_status_timestamp_after(sql_storage):
+    """statusTimestampAfter returns only tasks whose status changed after the cutoff."""
+    t1 = await sql_storage.create_task("ctx-1", _msg("a"))
+    cutoff = _ts(await sql_storage.load_task(t1.id))
+    await anyio.sleep(0.01)  # ensure a strictly later timestamp
+    t2 = await sql_storage.create_task("ctx-1", _msg("b"))
+
+    result = await sql_storage.list_tasks(ListTasksQuery(status_timestamp_after=cutoff))
+    assert [t.id for t in result.tasks] == [t2.id]
+    assert result.total_size == 1
+
+
+async def test_list_tasks_tenant_filter(sql_storage):
+    """tenant filter matches only tasks whose metadata carries the tenant."""
+    tenant_ids = []
+    for i in range(3):
+        t = await sql_storage.create_task("ctx-1", _msg(f"a{i}"))
+        await sql_storage.update_task(t.id, task_metadata={META_TENANT_KEY: "acme"})
+        tenant_ids.append(t.id)
+    other = await sql_storage.create_task("ctx-1", _msg("other"))
+    await sql_storage.update_task(other.id, task_metadata={META_TENANT_KEY: "globex"})
+    await sql_storage.create_task("ctx-1", _msg("untenanted"))
+
+    result = await sql_storage.list_tasks(ListTasksQuery(tenant="acme"))
+    assert result.total_size == 3
+    assert {t.id for t in result.tasks} == set(tenant_ids)
+
+
+async def test_list_tasks_tenant_pagination(sql_storage):
+    """total_size and next_page_token are computed on the tenant-filtered set."""
+    tenant_ids = set()
+    for i in range(3):
+        t = await sql_storage.create_task("ctx-1", _msg(f"a{i}"))
+        await sql_storage.update_task(t.id, task_metadata={META_TENANT_KEY: "acme"})
+        tenant_ids.add(t.id)
+    for i in range(3):
+        await sql_storage.create_task("ctx-1", _msg(f"b{i}"))
+
+    page1 = await sql_storage.list_tasks(ListTasksQuery(tenant="acme", page_size=2))
+    assert len(page1.tasks) == 2
+    assert page1.total_size == 3
+    assert page1.next_page_token != ""
+
+    page2 = await sql_storage.list_tasks(
+        ListTasksQuery(tenant="acme", page_size=2, page_token=page1.next_page_token)
+    )
+    assert len(page2.tasks) == 1
+    assert page2.next_page_token == ""
+    assert {t.id for t in page1.tasks} | {t.id for t in page2.tasks} == tenant_ids
+
+
 # -- history_length --
 
 
@@ -442,3 +512,118 @@ async def test_metadata_roundtrip(sql_storage):
 async def test_update_nonexistent_raises(sql_storage):
     with pytest.raises(TaskNotFoundError):
         await sql_storage.update_task("does-not-exist", state=TaskState.task_state_working)
+
+
+# -- OCC contention (SQLite-specific: injects a competing write between
+# -- the SELECT and the version-guarded UPDATE inside update_task) --
+
+
+def _bump_version_sync(db_path, task_id: str) -> None:
+    """Simulate a concurrent writer: bump the row version out-of-band."""
+    import sqlite3
+
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute("PRAGMA busy_timeout=5000")
+        conn.execute(
+            "UPDATE a2akit_tasks SET version = version + 1 WHERE id = ?",
+            (task_id,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _install_conflict_hook(storage, db_path, task_id: str) -> None:
+    """Bump the version during the first serialize call of update_task.
+
+    ``_serialize_messages`` runs after update_task's SELECT and before its
+    guarded UPDATE, so this deterministically forces the rowcount-0 branch
+    on the first attempt only.
+    """
+    original = storage._serialize_messages
+    fired = False
+
+    def racy_serialize(msgs):
+        nonlocal fired
+        if not fired:
+            fired = True
+            _bump_version_sync(db_path, task_id)
+        return original(msgs)
+
+    storage._serialize_messages = racy_serialize  # instance attr shadows staticmethod
+
+
+async def test_blind_write_retries_on_conflict(tmp_path):
+    """A blind update_task (expected_version=None) retries past a conflicting writer."""
+    db_path = tmp_path / "occ.sqlite"
+    storage = _sqlite_storage(f"sqlite+aiosqlite:///{db_path.as_posix()}")
+    async with storage:
+        task = await storage.create_task("ctx-1", _msg("first"))
+        _install_conflict_hook(storage, db_path, task.id)
+
+        m2 = _msg("second").model_copy(update={"task_id": task.id, "context_id": "ctx-1"})
+        version = await storage.update_task(task.id, messages=[m2])
+
+        # v1 create → v2 competing bump → v3 our (retried) write
+        assert version == 3
+        loaded = await storage.load_task(task.id)
+        assert loaded is not None
+        assert len(loaded.history) == 2
+
+
+async def test_expected_version_conflict_raises(tmp_path):
+    """With expected_version pinned, a conflicting writer surfaces as ConcurrencyError."""
+    db_path = tmp_path / "occ_strict.sqlite"
+    storage = _sqlite_storage(f"sqlite+aiosqlite:///{db_path.as_posix()}")
+    async with storage:
+        task = await storage.create_task("ctx-1", _msg("first"))
+        _install_conflict_hook(storage, db_path, task.id)
+
+        m2 = _msg("second").model_copy(update={"task_id": task.id, "context_id": "ctx-1"})
+        with pytest.raises(ConcurrencyError):
+            await storage.update_task(task.id, messages=[m2], expected_version=1)
+
+
+async def test_concurrent_blind_updates_all_succeed(tmp_path):
+    """Concurrent blind update_task calls must all succeed (no spurious ConcurrencyError)."""
+    db_path = tmp_path / "concurrent.sqlite"
+    storage = _sqlite_storage(f"sqlite+aiosqlite:///{db_path.as_posix()}")
+    async with storage:
+        task = await storage.create_task("ctx-1", _msg("first"))
+
+        async def _append(i: int) -> None:
+            m = _msg(f"msg-{i}").model_copy(update={"task_id": task.id, "context_id": "ctx-1"})
+            await storage.update_task(task.id, messages=[m])
+
+        await asyncio.gather(*(_append(i) for i in range(4)))
+
+        loaded = await storage.load_task(task.id)
+        assert loaded is not None
+        assert len(loaded.history) == 5  # initial + 4 appends
+        assert await storage.get_version(task.id) == 5
+
+
+async def test_concurrent_idempotent_create(tmp_path):
+    """Concurrent create_task calls with the same idempotency key yield one task."""
+    db_path = tmp_path / "idem.sqlite"
+    storage = _sqlite_storage(f"sqlite+aiosqlite:///{db_path.as_posix()}")
+    async with storage:
+        t1, t2 = await asyncio.gather(
+            storage.create_task("ctx-1", _msg("a"), idempotency_key="idem-1"),
+            storage.create_task("ctx-1", _msg("b"), idempotency_key="idem-1"),
+        )
+        assert t1.id == t2.id
+
+
+# -- SQLite connection pragmas --
+
+
+async def test_sqlite_busy_timeout_pragma():
+    """The connect hook sets busy_timeout so concurrent writers wait, not fail."""
+    from sqlalchemy import text
+
+    storage = _sqlite_storage()
+    async with storage, storage._get_session() as session:
+        result = await session.execute(text("PRAGMA busy_timeout"))
+        assert result.scalar() == 5000

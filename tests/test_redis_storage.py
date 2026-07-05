@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import uuid
 
+import anyio
 import pytest
 from a2a.types import (
     Artifact,
@@ -16,12 +17,20 @@ from a2a_pydantic.v10 import Role as V10Role
 from a2a_pydantic.v10 import TaskState
 
 from a2akit.storage.base import (
+    META_TENANT_KEY,
     ArtifactWrite,
     ConcurrencyError,
     ListTasksQuery,
     TaskNotFoundError,
     TaskTerminalStateError,
 )
+
+
+def _ts(task) -> str:
+    """Return a task's status timestamp as an ISO string."""
+    ts = task.status.timestamp
+    root = getattr(ts, "root", ts)
+    return root.isoformat() if hasattr(root, "isoformat") else str(root)
 
 
 def _msg(text: str = "hello", msg_id: str | None = None) -> Message:
@@ -302,6 +311,29 @@ async def test_list_tasks_exclude_artifacts(redis_storage):
 
     result = await redis_storage.list_tasks(ListTasksQuery(include_artifacts=False))
     assert not result.tasks[0].artifacts
+
+
+async def test_list_tasks_status_timestamp_after(redis_storage):
+    """statusTimestampAfter returns only tasks whose status changed after the cutoff."""
+    t1 = await redis_storage.create_task("ctx-1", _msg("a"))
+    cutoff = _ts(await redis_storage.load_task(t1.id))
+    await anyio.sleep(0.01)  # ensure a strictly later timestamp
+    t2 = await redis_storage.create_task("ctx-1", _msg("b"))
+
+    result = await redis_storage.list_tasks(ListTasksQuery(status_timestamp_after=cutoff))
+    assert [t.id for t in result.tasks] == [t2.id]
+    assert result.total_size == 1
+
+
+async def test_list_tasks_tenant_filter(redis_storage):
+    """tenant filter matches only tasks whose metadata carries the tenant."""
+    t1 = await redis_storage.create_task("ctx-1", _msg("a"))
+    await redis_storage.update_task(t1.id, task_metadata={META_TENANT_KEY: "acme"})
+    await redis_storage.create_task("ctx-1", _msg("b"))
+
+    result = await redis_storage.list_tasks(ListTasksQuery(tenant="acme"))
+    assert [t.id for t in result.tasks] == [t1.id]
+    assert result.total_size == 1
 
 
 # -- history_length --

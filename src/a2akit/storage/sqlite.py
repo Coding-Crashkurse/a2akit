@@ -55,6 +55,9 @@ class SQLiteStorage(SQLStorageBase[Any]):
             cursor = dbapi_conn.cursor()
             cursor.execute("PRAGMA journal_mode=WAL")
             cursor.execute("PRAGMA foreign_keys=ON")
+            # Wait up to 5s for a competing writer's lock instead of
+            # failing instantly with "database is locked".
+            cursor.execute("PRAGMA busy_timeout=5000")
             cursor.close()
 
         return engine

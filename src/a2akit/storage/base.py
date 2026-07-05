@@ -273,6 +273,12 @@ class Storage(ABC, Generic[ContextT]):
         task instead of creating a duplicate.  The key is scoped per
         context to avoid a global unique index on large tables.
 
+        **Idempotency-key retention differs per backend:** SQL and
+        InMemory backends keep the mapping for the lifetime of the task.
+        RedisStorage expires it after ``redis_idempotency_ttl_s``
+        (default 24h) — a retry with the same key after the TTL creates
+        a **new** task.
+
         **Atomicity requirement:** DB backends MUST implement idempotency
         as an atomic operation. The recommended pattern is a UNIQUE
         constraint on ``(context_id, idempotency_key)`` combined with

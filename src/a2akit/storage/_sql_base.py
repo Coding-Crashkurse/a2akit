@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from a2a_pydantic import v10
-from sqlalchemy import Column, Integer, MetaData, String, Table, Text, func, select
+from sqlalchemy import JSON, Column, Integer, MetaData, String, Table, Text, cast, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
@@ -253,7 +253,10 @@ class SQLStorageBase(Storage[ContextT]):
                 )
 
         loaded = await self.load_task(task_id)
-        assert loaded is not None
+        if loaded is None:
+            # Same failure mode as RedisStorage: don't rely on ``assert``
+            # (stripped under ``python -O``) for a real integrity check.
+            raise TaskNotFoundError(f"Task {task_id} vanished immediately after create")
         # Attach the transient just-created marker (see storage/base.py
         # contract). Not persisted — TaskManager pops it, and
         # _sanitize_task_for_client strips any leftover _-prefixed keys.
@@ -282,84 +285,104 @@ class SQLStorageBase(Storage[ContextT]):
                 ArtifactWrite(_coerce_v10_artifact(aw.artifact), append=aw.append)
                 for aw in artifacts
             ]
-        async with self._get_session() as session, session.begin():
-            result = await session.execute(tasks_table.select().where(tasks_table.c.id == task_id))
-            row = result.first()
-            if row is None:
-                raise TaskNotFoundError(f"Task {task_id} not found")
-
-            if expected_version is not None and row.version != expected_version:
-                raise ConcurrencyError(
-                    f"Version mismatch for task {task_id}: "
-                    f"expected {expected_version}, current {row.version}",
-                    current_version=row.version,
+        # The merge (history append, artifact apply, metadata merge) happens
+        # in Python between a SELECT and a version-guarded UPDATE. The guard
+        # hits 0 rows when another writer commits in that window. When the
+        # caller pinned ``expected_version`` the conflict MUST surface as
+        # ConcurrencyError (strict OCC). When the caller did a blind write
+        # (``expected_version=None``) their semantics are "merge on top of
+        # whatever is current", so we transparently re-read and re-merge —
+        # bounded, mirroring RedisStorage's retry loop.
+        max_attempts = 1 if expected_version is not None else 8
+        for attempt in range(max_attempts):
+            async with self._get_session() as session, session.begin():
+                result = await session.execute(
+                    tasks_table.select().where(tasks_table.c.id == task_id)
                 )
+                row = result.first()
+                if row is None:
+                    raise TaskNotFoundError(f"Task {task_id} not found")
 
-            if state is not None and row.status_state in {s.value for s in TERMINAL_STATES}:
-                raise TaskTerminalStateError(
-                    f"Cannot transition terminal task {task_id} "
-                    f"from {row.status_state} to {state.value}"
-                )
-
-            values: dict[str, Any] = {}
-            new_version = row.version + 1
-            values["version"] = new_version
-
-            if messages:
-                existing_history = self._deserialize_messages(row.history)
-                existing_history.extend(messages)
-                values["history"] = self._serialize_messages(existing_history)
-
-            if artifacts:
-                existing_artifacts = self._deserialize_artifacts(row.artifacts)
-                for aw in artifacts:
-                    existing_artifacts = self._apply_artifact(
-                        existing_artifacts, aw.artifact, append=aw.append
+                if expected_version is not None and row.version != expected_version:
+                    raise ConcurrencyError(
+                        f"Version mismatch for task {task_id}: "
+                        f"expected {expected_version}, current {row.version}",
+                        current_version=row.version,
                     )
-                values["artifacts"] = self._serialize_artifacts(existing_artifacts)
 
-            if task_metadata:
-                existing_meta = json.loads(row.metadata_json) if row.metadata_json else {}
-                existing_meta.update(task_metadata)
-                values["metadata_json"] = json.dumps(existing_meta)
+                if state is not None and row.status_state in {s.value for s in TERMINAL_STATES}:
+                    raise TaskTerminalStateError(
+                        f"Cannot transition terminal task {task_id} "
+                        f"from {row.status_state} to {state.value}"
+                    )
 
-            now_iso = datetime.now(UTC).isoformat()
-            if state is not None:
-                values["status_state"] = state.value
-                values["status_timestamp"] = now_iso
-                values["status_message"] = self._serialize_message(status_message)
-                # Append state-transition record (after task_metadata merge)
-                existing_meta = json.loads(
-                    values.get("metadata_json") or row.metadata_json or "{}"
-                )
-                existing_meta.setdefault("stateTransitions", []).append(
-                    _build_transition_record(state.value, now_iso, status_message),
-                )
-                existing_meta[META_LAST_MODIFIED_KEY] = now_iso
-                values["metadata_json"] = json.dumps(existing_meta)
-            elif status_message is not None:
-                # Update status message without a state transition (e.g. progress text)
-                values["status_message"] = self._serialize_message(status_message)
-                values["status_timestamp"] = now_iso
-                existing_meta = json.loads(
-                    values.get("metadata_json") or row.metadata_json or "{}"
-                )
-                existing_meta[META_LAST_MODIFIED_KEY] = now_iso
-                values["metadata_json"] = json.dumps(existing_meta)
+                values: dict[str, Any] = {}
+                new_version = row.version + 1
+                values["version"] = new_version
 
-            result = await session.execute(
-                tasks_table.update()
-                .where(tasks_table.c.id == task_id)
-                .where(tasks_table.c.version == row.version)
-                .values(**values)
-            )
-            if result.rowcount == 0:  # type: ignore[attr-defined]
+                if messages:
+                    existing_history = self._deserialize_messages(row.history)
+                    existing_history.extend(messages)
+                    values["history"] = self._serialize_messages(existing_history)
+
+                if artifacts:
+                    existing_artifacts = self._deserialize_artifacts(row.artifacts)
+                    for aw in artifacts:
+                        existing_artifacts = self._apply_artifact(
+                            existing_artifacts, aw.artifact, append=aw.append
+                        )
+                    values["artifacts"] = self._serialize_artifacts(existing_artifacts)
+
+                if task_metadata:
+                    existing_meta = json.loads(row.metadata_json) if row.metadata_json else {}
+                    existing_meta.update(task_metadata)
+                    values["metadata_json"] = json.dumps(existing_meta)
+
+                now_iso = datetime.now(UTC).isoformat()
+                if state is not None:
+                    values["status_state"] = state.value
+                    values["status_timestamp"] = now_iso
+                    values["status_message"] = self._serialize_message(status_message)
+                    # Append state-transition record (after task_metadata merge)
+                    existing_meta = json.loads(
+                        values.get("metadata_json") or row.metadata_json or "{}"
+                    )
+                    existing_meta.setdefault("stateTransitions", []).append(
+                        _build_transition_record(state.value, now_iso, status_message),
+                    )
+                    existing_meta[META_LAST_MODIFIED_KEY] = now_iso
+                    values["metadata_json"] = json.dumps(existing_meta)
+                elif status_message is not None:
+                    # Update status message without a state transition (e.g. progress text)
+                    values["status_message"] = self._serialize_message(status_message)
+                    values["status_timestamp"] = now_iso
+                    existing_meta = json.loads(
+                        values.get("metadata_json") or row.metadata_json or "{}"
+                    )
+                    existing_meta[META_LAST_MODIFIED_KEY] = now_iso
+                    values["metadata_json"] = json.dumps(existing_meta)
+
+                result = await session.execute(
+                    tasks_table.update()
+                    .where(tasks_table.c.id == task_id)
+                    .where(tasks_table.c.version == row.version)
+                    .values(**values)
+                )
+                if result.rowcount > 0:  # type: ignore[attr-defined]
+                    return int(new_version)
+
+            # rowcount == 0: concurrent writer bumped the version between
+            # our SELECT and UPDATE.
+            if expected_version is not None or attempt == max_attempts - 1:
                 raise ConcurrencyError(
                     f"Concurrent modification of task {task_id}",
                     current_version=None,  # force fresh read via get_version()
                 )
+            # Blind write: retry with a fresh read so the caller's merge
+            # lands on top of the winning writer's state.
 
-            return int(new_version)
+        # Unreachable: loop either returns or raises
+        raise RuntimeError("update_task retry loop exited without result")
 
     @staticmethod
     def _apply_artifact(
@@ -378,6 +401,26 @@ class SQLStorageBase(Storage[ContextT]):
             existing.append(artifact)
         return existing
 
+    def _tenant_condition(self, tenant: str) -> Any:
+        """SQL predicate matching tasks whose metadata carries ``tenant``.
+
+        There is no dedicated tenant column — the tenant lives inside the
+        ``metadata_json`` TEXT column under ``META_TENANT_KEY``, so it is
+        extracted with the dialect's JSON function. Rows with NULL or
+        tenant-less metadata yield SQL NULL and never match. In heavily
+        tenanted workloads a proper indexed column remains future work.
+        """
+        dialect = self._engine.dialect.name if self._engine is not None else ""
+        if dialect == "postgresql":
+            return (
+                func.json_extract_path_text(
+                    cast(tasks_table.c.metadata_json, JSON), META_TENANT_KEY
+                )
+                == tenant
+            )
+        # SQLite (and MySQL) provide json_extract() with a JSON-path argument.
+        return func.json_extract(tasks_table.c.metadata_json, f'$."{META_TENANT_KEY}"') == tenant
+
     async def list_tasks(self, query: ListTasksQuery) -> ListTasksResult:
         async with self._get_session() as session:
             conditions = []
@@ -387,13 +430,12 @@ class SQLStorageBase(Storage[ContextT]):
                 conditions.append(tasks_table.c.status_state == query.status.value)
             if query.status_timestamp_after:
                 conditions.append(tasks_table.c.status_timestamp > query.status_timestamp_after)
-            # NOTE: tenant filter. There is no dedicated SQL column — the
-            # tenant lives inside metadata_json. We post-filter in Python
-            # after the DB fetch rather than a JSON-path query (not portable
-            # across Postgres / SQLite). Page_size acts as an upper bound on
-            # the scanned set; in tenanted workloads you'll want a proper
-            # indexed column (future work).
-            tenant_filter = query.tenant
+            if query.tenant:
+                # Tenant filtering MUST happen in SQL, before COUNT and
+                # pagination — post-filtering the fetched page in Python
+                # overstates total_size and can return empty pages that
+                # still carry a next_page_token.
+                conditions.append(self._tenant_condition(query.tenant))
 
             count_q = select(func.count()).select_from(tasks_table)
             for cond in conditions:
@@ -425,10 +467,6 @@ class SQLStorageBase(Storage[ContextT]):
                 )
                 for r in rows
             ]
-            if tenant_filter:
-                tasks = [
-                    t for t in tasks if (t.metadata or {}).get(META_TENANT_KEY) == tenant_filter
-                ]
 
             next_offset = offset + query.page_size
             next_token = str(next_offset) if next_offset < total_size else ""

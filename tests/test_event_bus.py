@@ -187,3 +187,77 @@ async def test_subscribe_with_invalid_after_event_id(event_bus):
 
     assert len(received) == 1
     assert received[0].final is True
+
+
+def _status_event(task_id: str, *, final: bool) -> TaskStatusUpdateEvent:
+    state = TaskState.completed if final else TaskState.working
+    return TaskStatusUpdateEvent(
+        task_id=task_id,
+        context_id="ctx-1",
+        kind="status-update",
+        status=TaskStatus(state=state),
+        final=final,
+    )
+
+
+async def test_replay_survives_terminal_cleanup():
+    """Replay state outlives cleanup() so late Last-Event-ID reconnects still work.
+
+    Mirrors the Redis event bus, which keeps its replay stream alive for
+    60s (EXPIRE) after terminal cleanup instead of deleting it instantly.
+    """
+    from a2akit.event_bus.memory import InMemoryEventBus
+
+    eb = InMemoryEventBus()
+    async with eb:
+        task_id = "task-replay-window"
+        await eb.publish(task_id, _status_event(task_id, final=False))
+        await eb.publish(task_id, _status_event(task_id, final=True))
+        await eb.cleanup(task_id)
+
+        received = []
+        async with eb.subscribe(task_id, after_event_id="1") as stream:
+            async for eid, ev in stream:
+                received.append((eid, ev))
+
+        assert len(received) == 1
+        assert received[0][0] == "2"
+        assert received[0][1].final is True
+
+
+async def test_replay_state_purged_after_grace_window():
+    """Once the grace window elapses, replay buffers and counters are dropped."""
+    from a2akit.event_bus.memory import InMemoryEventBus
+
+    eb = InMemoryEventBus()
+    async with eb:
+        task_id = "task-purged"
+        await eb.publish(task_id, _status_event(task_id, final=True))
+        await eb.cleanup(task_id)
+        # Within the grace window the state is retained.
+        assert task_id in eb._replay_buffers
+        assert task_id in eb._event_counters
+
+        # Force the deadline into the past and trigger the lazy purge.
+        eb._purge_deadlines[task_id] = 0.0
+        await eb.cleanup("some-other-task")
+
+        assert task_id not in eb._replay_buffers
+        assert task_id not in eb._event_counters
+
+
+async def test_publish_after_cleanup_keeps_counter_monotonic():
+    """New activity within the grace window cancels the purge; IDs keep rising."""
+    from a2akit.event_bus.memory import InMemoryEventBus
+
+    eb = InMemoryEventBus()
+    async with eb:
+        task_id = "task-reused"
+        eid1 = await eb.publish(task_id, _status_event(task_id, final=False))
+        await eb.cleanup(task_id)
+        eid2 = await eb.publish(task_id, _status_event(task_id, final=False))
+
+        assert eid1 is not None
+        assert eid2 is not None
+        assert int(eid2) > int(eid1)
+        assert task_id not in eb._purge_deadlines

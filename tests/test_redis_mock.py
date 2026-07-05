@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -22,6 +23,17 @@ from a2a_pydantic.v10 import (
 )
 
 from a2akit.config import Settings
+
+
+def _mock_redis_with_pipeline() -> tuple[AsyncMock, AsyncMock]:
+    """AsyncMock Redis client whose .pipeline() yields a mock pipe."""
+    mock_redis = AsyncMock()
+    mock_pipe = AsyncMock()
+    mock_ctx = MagicMock()
+    mock_ctx.__aenter__ = AsyncMock(return_value=mock_pipe)
+    mock_ctx.__aexit__ = AsyncMock(return_value=False)
+    mock_redis.pipeline = MagicMock(return_value=mock_ctx)
+    return mock_redis, mock_pipe
 
 
 def _params(text: str = "hello") -> SendMessageRequest:
@@ -171,15 +183,12 @@ class TestEventBusSerialization:
 class TestRedisOperationHandle:
     """Test ack/nack logic with mocked Redis."""
 
-    def _make_handle(self, *, attempt: int = 1, max_retries: int = 3):
+    def _make_handle(
+        self, *, attempt: int = 1, max_retries: int = 3, stream_maxlen: int | None = None
+    ):
         from a2akit.broker.redis import RedisOperationHandle, _RunTask
 
-        mock_redis = AsyncMock()
-        mock_pipe = AsyncMock()
-        mock_ctx = MagicMock()
-        mock_ctx.__aenter__ = AsyncMock(return_value=mock_pipe)
-        mock_ctx.__aexit__ = AsyncMock(return_value=False)
-        mock_redis.pipeline = MagicMock(return_value=mock_ctx)
+        mock_redis, mock_pipe = _mock_redis_with_pipeline()
 
         op = _RunTask(
             operation="run",
@@ -198,6 +207,7 @@ class TestRedisOperationHandle:
             serialized_op=b'{"test": true}',
             attempt=attempt,
             max_retries=max_retries,
+            stream_maxlen=stream_maxlen,
         )
         return handle, mock_redis, mock_pipe
 
@@ -229,6 +239,28 @@ class TestRedisOperationHandle:
         call_args = mock_redis.xadd.call_args
         assert call_args[0][0] == "dlq:tasks"  # DLQ key
         mock_redis.xack.assert_awaited_once()
+
+    async def test_nack_with_delay_sets_not_before(self):
+        handle, _, mock_pipe = self._make_handle(attempt=1, max_retries=3)
+        await handle.nack(delay_seconds=30)
+        fields = mock_pipe.xadd.call_args[0][1]
+        assert b"not_before" in fields
+        assert float(fields[b"not_before"]) > time.time()
+        assert fields[b"attempt"] == b"2"
+
+    async def test_nack_readd_trims_stream(self):
+        handle, _, mock_pipe = self._make_handle(attempt=1, max_retries=3, stream_maxlen=42)
+        await handle.nack()
+        kwargs = mock_pipe.xadd.call_args.kwargs
+        assert kwargs["maxlen"] == 42
+        assert kwargs["approximate"] is True
+
+    async def test_nack_dlq_trims_stream(self):
+        handle, mock_redis, _ = self._make_handle(attempt=3, max_retries=3, stream_maxlen=42)
+        await handle.nack()
+        kwargs = mock_redis.xadd.call_args.kwargs
+        assert kwargs["maxlen"] == 42
+        assert kwargs["approximate"] is True
 
 
 class TestRedisBrokerConstruction:
@@ -643,3 +675,295 @@ class TestRedisTaskLockFactory:
         result = factory("task-123")
         mock_redis.lock.assert_called_once_with("a2akit:tasklock:task-123", timeout=120)
         assert result == "lock-obj"
+
+    def test_respects_key_prefix(self):
+        from a2akit.broker.redis import redis_task_lock_factory
+
+        mock_redis = MagicMock()
+        factory = redis_task_lock_factory(mock_redis, timeout=60, key_prefix="custom:")
+        factory("task-1")
+        mock_redis.lock.assert_called_once_with("custom:tasklock:task-1", timeout=60)
+
+
+class TestBrokerStreamTrimming:
+    """Task stream and DLQ XADDs carry an approximate MAXLEN."""
+
+    def test_maxlen_from_settings(self):
+        from a2akit.broker.redis import RedisBroker
+
+        settings = Settings(redis_broker_stream_maxlen=77)
+        broker = RedisBroker(settings=settings)
+        assert broker._stream_maxlen == 77
+
+    def test_claim_timeout_default_is_10_minutes(self):
+        assert Settings().redis_broker_claim_timeout_ms == 600000
+
+    async def test_run_task_trims_stream(self):
+        from a2akit.broker.redis import RedisBroker
+
+        broker = RedisBroker("redis://localhost:6379/0", key_prefix="t:", stream_maxlen=42)
+        mock_redis = AsyncMock()
+        broker._redis = mock_redis
+        await broker.run_task(_params("x"))
+        kwargs = mock_redis.xadd.call_args.kwargs
+        assert kwargs["maxlen"] == 42
+        assert kwargs["approximate"] is True
+
+
+class TestNotBeforeHandling:
+    """Backoff (not_before) entries are re-queued instead of slept on."""
+
+    def _broker(self, stream_maxlen: int = 50):
+        from a2akit.broker.redis import RedisBroker
+
+        broker = RedisBroker(
+            "redis://localhost:6379/0",
+            key_prefix="t:",
+            stream_maxlen=stream_maxlen,
+            block_ms=10,
+            max_retries=3,
+        )
+        mock_redis, mock_pipe = _mock_redis_with_pipeline()
+        broker._redis = mock_redis
+        return broker, mock_redis, mock_pipe
+
+    def _serialized_op(self, text: str = "op") -> bytes:
+        from a2akit.broker.redis import _serialize_operation
+
+        return _serialize_operation(_params(text), is_new_task=False, request_context={}).encode()
+
+    async def test_consume_requeues_not_due_entry(self):
+        import redis.asyncio as aioredis
+
+        broker, mock_redis, mock_pipe = self._broker()
+        mock_redis.xautoclaim.side_effect = aioredis.ResponseError("NOGROUP")
+
+        fields = {
+            b"op": self._serialized_op(),
+            b"attempt": b"2",
+            b"not_before": str(time.time() + 3600).encode(),
+        }
+        calls = 0
+
+        async def fake_xreadgroup(**kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                return [(b"t:stream:tasks", [(b"1-0", fields)])]
+            broker._shutdown_flag = True
+            return []
+
+        mock_redis.xreadgroup = AsyncMock(side_effect=fake_xreadgroup)
+
+        handles = [h async for h in broker.receive_task_operations()]
+        # Never yielded — re-added (fields preserved) + ACKed instead.
+        assert handles == []
+        xadd_call = mock_pipe.xadd.call_args
+        assert xadd_call[0][1] == fields
+        assert xadd_call.kwargs["maxlen"] == 50
+        assert xadd_call.kwargs["approximate"] is True
+        mock_pipe.xack.assert_called_once()
+
+    async def test_consume_yields_due_entry(self):
+        import redis.asyncio as aioredis
+
+        broker, mock_redis, _ = self._broker()
+        mock_redis.xautoclaim.side_effect = aioredis.ResponseError("NOGROUP")
+
+        fields = {
+            b"op": self._serialized_op("due"),
+            b"attempt": b"2",
+            b"not_before": str(time.time() - 5).encode(),
+        }
+        calls = 0
+
+        async def fake_xreadgroup(**kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                return [(b"t:stream:tasks", [(b"1-0", fields)])]
+            broker._shutdown_flag = True
+            return []
+
+        mock_redis.xreadgroup = AsyncMock(side_effect=fake_xreadgroup)
+
+        handles = [h async for h in broker.receive_task_operations()]
+        assert len(handles) == 1
+        assert handles[0].attempt == 2
+
+    async def test_claim_requeues_not_due_entry(self):
+        broker, mock_redis, mock_pipe = self._broker()
+        fields = {
+            b"op": self._serialized_op(),
+            b"attempt": b"2",
+            b"not_before": str(time.time() + 3600).encode(),
+        }
+        mock_redis.xautoclaim = AsyncMock(return_value=(b"0-0", [(b"9-0", fields)], []))
+
+        handles = [h async for h in broker._claim_stale_messages()]
+        assert handles == []
+        xadd_call = mock_pipe.xadd.call_args
+        assert xadd_call[0][1] == fields
+        mock_pipe.xack.assert_called_once()
+        # A not-yet-due claim must not count toward the poison-pill limit.
+        mock_redis.hincrby.assert_not_awaited()
+
+
+class TestClaimPath:
+    """XAUTOCLAIM recovery: normal re-delivery and poison-pill DLQ."""
+
+    def _broker(self):
+        from a2akit.broker.redis import RedisBroker
+
+        broker = RedisBroker(
+            "redis://localhost:6379/0", key_prefix="t:", stream_maxlen=42, max_retries=3
+        )
+        mock_redis, mock_pipe = _mock_redis_with_pipeline()
+        broker._redis = mock_redis
+        return broker, mock_redis, mock_pipe
+
+    def _fields(self) -> dict[bytes, bytes]:
+        from a2akit.broker.redis import _serialize_operation
+
+        serialized = _serialize_operation(
+            _params("claimed"), is_new_task=False, request_context={}
+        )
+        return {b"op": serialized.encode(), b"attempt": b"1"}
+
+    async def test_claim_yields_with_effective_attempt(self):
+        broker, mock_redis, _ = self._broker()
+        mock_redis.xautoclaim = AsyncMock(return_value=(b"0-0", [(b"9-0", self._fields())], []))
+        mock_redis.hincrby = AsyncMock(return_value=1)
+
+        handles = [h async for h in broker._claim_stale_messages()]
+        assert len(handles) == 1
+        assert handles[0].attempt == 2  # payload attempt 1 + 1 crash claim
+
+    async def test_claim_poison_pill_moves_to_dlq(self):
+        broker, mock_redis, _ = self._broker()
+        mock_redis.xautoclaim = AsyncMock(return_value=(b"0-0", [(b"9-0", self._fields())], []))
+        mock_redis.hincrby = AsyncMock(return_value=5)  # 1 + 5 > max_retries=3
+
+        handles = [h async for h in broker._claim_stale_messages()]
+        # Handle is still yielded so the WorkerAdapter can fail the task.
+        assert len(handles) == 1
+        assert handles[0].attempt == 6
+        dlq_call = mock_redis.xadd.call_args
+        assert dlq_call[0][0] == broker._dlq_key
+        assert dlq_call.kwargs["maxlen"] == 42
+        assert dlq_call.kwargs["approximate"] is True
+        mock_redis.xack.assert_awaited_once()
+        mock_redis.hdel.assert_awaited_once()
+
+
+class TestRedisStorageMocked:
+    """RedisStorage logic paths that don't need a live server."""
+
+    def _task_hash(self, *, decoded: bool) -> dict:
+        fields = {
+            "id": "t1",
+            "context_id": "c1",
+            "status_state": TaskState.task_state_submitted.value,
+            "status_timestamp": "2026-01-01T00:00:00+00:00",
+            "history": "[]",
+            "artifacts": "[]",
+            "version": "1",
+        }
+        if decoded:
+            return fields
+        return {k.encode(): v.encode() for k, v in fields.items()}
+
+    def _storage(self, **settings_kwargs):
+        from a2akit.storage.redis import RedisStorage
+
+        settings = Settings(redis_url="redis://localhost:6379/0", **settings_kwargs)
+        storage = RedisStorage(settings=settings, key_prefix="t:")
+        storage._redis = AsyncMock()
+        return storage
+
+    async def test_load_task_with_decoded_responses(self):
+        """Pools created with decode_responses=True return str, not bytes."""
+        storage = self._storage()
+        storage._redis.hgetall = AsyncMock(return_value=self._task_hash(decoded=True))
+        task = await storage.load_task("t1")
+        assert task is not None
+        assert task.id == "t1"
+
+    async def test_load_task_with_bytes_responses(self):
+        storage = self._storage()
+        storage._redis.hgetall = AsyncMock(return_value=self._task_hash(decoded=False))
+        task = await storage.load_task("t1")
+        assert task is not None
+        assert task.id == "t1"
+
+    async def test_update_task_with_decoded_responses(self):
+        storage = self._storage()
+        storage._redis.hgetall = AsyncMock(return_value=self._task_hash(decoded=True))
+
+        async def fake_script(keys, args, client):
+            return 2
+
+        storage._update_script = fake_script
+        version = await storage.update_task("t1", state=TaskState.task_state_working)
+        assert version == 2
+
+    async def test_get_version_with_decoded_responses(self):
+        storage = self._storage()
+        storage._redis.hget = AsyncMock(return_value="5")
+        assert await storage.get_version("t1") == 5
+
+    async def test_update_script_receives_all_terminal_states(self):
+        """The Lua terminal guard list is derived from TERMINAL_STATES."""
+        from a2akit.storage.base import TERMINAL_STATES
+
+        storage = self._storage()
+        storage._redis.hgetall = AsyncMock(return_value=self._task_hash(decoded=False))
+        captured: dict = {}
+
+        async def fake_script(keys, args, client):
+            captured["args"] = args
+            return 2
+
+        storage._update_script = fake_script
+        await storage.update_task("t1", state=TaskState.task_state_working)
+
+        terminals = set(json.loads(captured["args"][3]))
+        assert terminals == {s.value for s in TERMINAL_STATES}
+
+    async def test_create_idempotent_passes_ttl(self):
+        storage = self._storage(redis_idempotency_ttl_s=123)
+        storage._redis.hgetall = AsyncMock(return_value=self._task_hash(decoded=False))
+        captured: dict = {}
+
+        async def fake_script(keys, args, client):
+            captured["args"] = args
+            return args[0]  # our own task_id → "newly created" path
+
+        storage._create_idem_script = fake_script
+        msg = Message(role=Role.role_user, parts=[Part(text="x")], message_id="m1")
+        await storage.create_task("c1", msg, idempotency_key="k1")
+        assert captured["args"][2] == "123"
+
+    async def test_delete_task_returns_false_when_del_races(self):
+        """DEL count is authoritative: a racing deleter means False."""
+        storage = self._storage()
+        mock_redis, mock_pipe = _mock_redis_with_pipeline()
+        storage._redis = mock_redis
+        mock_redis.hmget = AsyncMock(return_value=["c1", None])
+        mock_pipe.execute = AsyncMock(return_value=[0, 0])  # SREM, DEL(task)
+
+        assert await storage.delete_task("t1") is False
+
+    async def test_delete_task_returns_true_when_deleted(self):
+        storage = self._storage()
+        mock_redis, mock_pipe = _mock_redis_with_pipeline()
+        storage._redis = mock_redis
+        mock_redis.hmget = AsyncMock(return_value=["c1", None])
+        mock_pipe.execute = AsyncMock(return_value=[1, 1])
+
+        assert await storage.delete_task("t1") is True
+
+    async def test_delete_task_missing_returns_false(self):
+        storage = self._storage()
+        storage._redis.hmget = AsyncMock(return_value=[None, None])
+        assert await storage.delete_task("t1") is False

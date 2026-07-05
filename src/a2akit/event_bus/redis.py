@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import logging
 from contextlib import asynccontextmanager, suppress
-from typing import TYPE_CHECKING, Any, Self
+from typing import TYPE_CHECKING, Any, Self, TypeVar, cast
 
 from a2a_pydantic import v10
 
@@ -26,9 +26,21 @@ except ImportError as _import_error:
     ) from _import_error
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncIterator, Awaitable
 
 logger = logging.getLogger(__name__)
+
+_T = TypeVar("_T")
+
+
+def _aw(value: Awaitable[_T] | _T) -> Awaitable[_T]:
+    """Narrow redis-py's ``Awaitable[T] | T`` return annotation.
+
+    redis-py shares command stubs between its sync and async clients, so
+    async methods are annotated as returning ``Awaitable[T] | T``. On
+    ``redis.asyncio`` the result is always awaitable.
+    """
+    return cast("Awaitable[_T]", value)
 
 
 def _serialize_event(event: StreamEvent) -> str:
@@ -155,7 +167,7 @@ class RedisEventBus(EventBus):
         else:
             self._redis = aioredis.from_url(self._url)
         try:
-            await self._redis.ping()
+            await _aw(self._redis.ping())
         except Exception:
             if self._owns_connection:
                 await self._redis.aclose()
@@ -177,7 +189,7 @@ class RedisEventBus(EventBus):
         """Ping Redis to verify connectivity."""
         try:
             if self._redis:
-                await self._redis.ping()
+                await _aw(self._redis.ping())
             return {"status": "ok"}
         except Exception as exc:
             return {"status": "error", "error": str(exc)}
@@ -227,7 +239,9 @@ class RedisEventBus(EventBus):
             # subscribe()). Release the PubSub object's connection back to
             # the pool — otherwise it leaks until GC.
             with suppress(Exception):
-                await pubsub.aclose()
+                # Via Any: PubSub.aclose() is unannotated in some redis-py
+                # versions, which trips strict mypy's no-untyped-call.
+                await cast("Any", pubsub).aclose()
             raise
 
         # When no after_event_id is given, capture the stream position NOW
@@ -254,7 +268,9 @@ class RedisEventBus(EventBus):
         finally:
             try:
                 await pubsub.unsubscribe(channel)
-                await pubsub.aclose()
+                # Via Any: PubSub.aclose() is unannotated in some redis-py
+                # versions, which trips strict mypy's no-untyped-call.
+                await cast("Any", pubsub).aclose()
             except Exception:
                 pass
 

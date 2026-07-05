@@ -31,11 +31,28 @@ class Settings(BaseSettings):
     redis_broker_group: str = "workers"
     redis_broker_consumer_prefix: str = "worker"
     redis_broker_block_ms: int = 5000
-    redis_broker_claim_timeout_ms: int = 60000
+    # XAUTOCLAIM idle threshold. A message pending longer than this is
+    # assumed to belong to a crashed worker and is re-delivered to another
+    # consumer. Tradeoff: a lower value recovers from crashes faster but
+    # DUPLICATES tasks that legitimately run long (an LLM turn routinely
+    # exceeds 60s) — there is no worker heartbeat, so a busy worker is
+    # indistinguishable from a dead one. The 10-minute default favors
+    # avoiding duplicate execution over crash-recovery latency. For
+    # multi-worker deployments combine this with per-task locking
+    # (``redis_task_lock_factory``) so duplicate delivery stays harmless.
+    redis_broker_claim_timeout_ms: int = 600000
+    # Approximate MAXLEN for the broker task stream and its DLQ. XACK does
+    # not remove entries from a stream, so without trimming they grow
+    # forever. Applied (approximate=True) on every XADD.
+    redis_broker_stream_maxlen: int = 10000
     redis_event_bus_channel_prefix: str = "events:"
     redis_event_bus_stream_prefix: str = "eventlog:"
     redis_event_bus_stream_maxlen: int = 1000
     redis_cancel_ttl_s: int = 86400  # 24h
+    # TTL for idempotency-key mappings in RedisStorage. SQL and Memory
+    # backends never expire idempotency keys; Redis does (see the
+    # create_task contract in storage/base.py).
+    redis_idempotency_ttl_s: int = 86400  # 24h
 
     # Push notification settings
     push_max_retries: int = 3
