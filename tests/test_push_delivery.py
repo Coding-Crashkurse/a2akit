@@ -6,6 +6,7 @@ import asyncio
 from unittest.mock import patch
 
 import httpx
+import pytest
 from a2a.types import Task, TaskState, TaskStatus
 
 from a2akit.push.delivery import WebhookDeliveryService, _build_headers
@@ -14,6 +15,21 @@ from a2akit.push.models import (
     PushNotificationConfig,
     TaskPushNotificationConfig,
 )
+
+_PUBLIC_IP = "93.184.216.34"
+
+
+@pytest.fixture(autouse=True)
+def _public_dns(monkeypatch):
+    """Deterministic DNS: every hostname resolves to a public IP.
+
+    Keeps validation + connection pinning hermetic — no real DNS in tests.
+    """
+
+    async def _fake_getaddrinfo(hostname):
+        return [(2, 1, 6, "", (_PUBLIC_IP, 0))]
+
+    monkeypatch.setattr("a2akit.push.validation._getaddrinfo", _fake_getaddrinfo)
 
 
 def _make_task(task_id: str = "task-1", state: str = "working") -> Task:
@@ -106,7 +122,7 @@ async def test_delivery_strips_internal_metadata():
 
     captured: dict[str, object] = {}
 
-    async def _fake_post(url, json, headers):
+    async def _fake_post(url, json=None, headers=None, extensions=None):
         captured["json"] = json
         return httpx.Response(200)
 
@@ -218,6 +234,231 @@ async def test_shutdown_cancels_stuck_workers_before_closing_client():
 
     # Worker was force-cancelled and HTTP client closed.
     assert stuck_task.cancelled() or stuck_task.done()
+
+
+async def test_delivery_pins_connection_to_validated_ip():
+    """HTTPS delivery connects to the validated IP; Host header and SNI
+    (certificate hostname) keep the original hostname (DNS-rebinding fix)."""
+    service = WebhookDeliveryService(max_retries=1, timeout=5.0)
+    await service.startup()
+
+    captured: dict[str, object] = {}
+
+    async def _fake_post(url, json=None, headers=None, extensions=None):
+        captured["url"] = str(url)
+        captured["headers"] = headers
+        captured["extensions"] = extensions
+        return httpx.Response(200)
+
+    with patch.object(service._http_client, "post", side_effect=_fake_post):
+        config = _make_config(url="https://example.com:8443/webhook")
+        await service.deliver([config], _make_task())
+        await asyncio.sleep(0.1)
+
+    await service.shutdown()
+
+    assert captured["url"] == f"https://{_PUBLIC_IP}:8443/webhook"
+    assert captured["headers"]["Host"] == "example.com:8443"
+    assert captured["extensions"]["sni_hostname"] == "example.com"
+
+
+async def test_delivery_pins_http_without_sni():
+    """HTTP pinning rewrites the URL and Host header but sets no SNI."""
+    service = WebhookDeliveryService(max_retries=1, allow_http=True, timeout=5.0)
+    await service.startup()
+
+    captured: dict[str, object] = {}
+
+    async def _fake_post(url, json=None, headers=None, extensions=None):
+        captured["url"] = str(url)
+        captured["headers"] = headers
+        captured["extensions"] = extensions
+        return httpx.Response(200)
+
+    with patch.object(service._http_client, "post", side_effect=_fake_post):
+        config = _make_config(url="http://example.com/webhook")
+        await service.deliver([config], _make_task())
+        await asyncio.sleep(0.1)
+
+    await service.shutdown()
+
+    assert captured["url"] == f"http://{_PUBLIC_IP}/webhook"
+    assert captured["headers"]["Host"] == "example.com"
+    assert "sni_hostname" not in captured["extensions"]
+
+
+async def test_delivery_dns_rebinding_cannot_redirect(monkeypatch):
+    """An attacker flipping DNS answers after validation must not be able to
+    steer the POST — the connection is pinned to the first (validated) answer
+    and DNS is resolved exactly once per delivery."""
+    calls: list[str] = []
+
+    async def _flip_flop(hostname):
+        calls.append(hostname)
+        if len(calls) == 1:
+            return [(2, 1, 6, "", (_PUBLIC_IP, 0))]
+        return [(2, 1, 6, "", ("169.254.169.254", 0))]  # rebound to metadata IP
+
+    monkeypatch.setattr("a2akit.push.validation._getaddrinfo", _flip_flop)
+
+    service = WebhookDeliveryService(max_retries=1, timeout=5.0)
+    await service.startup()
+
+    captured: dict[str, object] = {}
+
+    async def _fake_post(url, json=None, headers=None, extensions=None):
+        captured["url"] = str(url)
+        return httpx.Response(200)
+
+    with patch.object(service._http_client, "post", side_effect=_fake_post):
+        config = _make_config(url="https://rebind.example.com/webhook")
+        await service.deliver([config], _make_task())
+        await asyncio.sleep(0.1)
+
+    await service.shutdown()
+
+    assert captured["url"] == f"https://{_PUBLIC_IP}/webhook"
+    assert calls == ["rebind.example.com"]
+
+
+async def test_delivery_no_pinning_for_ip_literal_and_allowlist():
+    """IP-literal hosts are inherently pinned and allowlisted hosts skip DNS —
+    neither gets a rewritten URL or Host override."""
+    service = WebhookDeliveryService(
+        max_retries=1, timeout=5.0, allowed_hosts={"trusted.example.com"}
+    )
+    await service.startup()
+
+    captured: list[tuple[str, dict]] = []
+
+    async def _fake_post(url, json=None, headers=None, extensions=None):
+        captured.append((str(url), headers))
+        return httpx.Response(200)
+
+    with patch.object(service._http_client, "post", side_effect=_fake_post):
+        await service.deliver(
+            [_make_config(config_id="cfg-allow", url="https://trusted.example.com/hook")],
+            _make_task(),
+        )
+        await asyncio.sleep(0.1)
+
+    await service.shutdown()
+
+    service2 = WebhookDeliveryService(max_retries=1, timeout=5.0)
+    await service2.startup()
+    with patch.object(service2._http_client, "post", side_effect=_fake_post):
+        await service2.deliver(
+            [_make_config(config_id="cfg-ip", url=f"https://{_PUBLIC_IP}/hook")],
+            _make_task(),
+        )
+        await asyncio.sleep(0.1)
+    await service2.shutdown()
+
+    assert len(captured) == 2
+    for _url, headers in captured:
+        assert "Host" not in headers
+    assert captured[0][0] == "https://trusted.example.com/hook"
+    assert captured[1][0] == f"https://{_PUBLIC_IP}/hook"
+
+
+async def test_delivery_retries_5xx_with_backoff_until_exhaustion(caplog):
+    """5xx responses are retried with exponential backoff up to max_retries,
+    then exhaustion is logged."""
+    service = WebhookDeliveryService(max_retries=3, retry_base_delay=0.01, timeout=5.0)
+    await service.startup()
+
+    real_sleep = asyncio.sleep
+    sleeps: list[float] = []
+
+    async def _fake_sleep(delay):
+        sleeps.append(delay)
+        await real_sleep(0)
+
+    mock_response = httpx.Response(500)
+    with (
+        patch.object(service._http_client, "post", return_value=mock_response) as mock_post,
+        patch("a2akit.push.delivery.asyncio.sleep", side_effect=_fake_sleep),
+    ):
+        config = _make_config(url="https://example.com/webhook")
+        await service.deliver([config], _make_task())
+        for _ in range(200):
+            if mock_post.call_count >= 3:
+                break
+            await real_sleep(0.01)
+
+    await service.shutdown()
+
+    assert mock_post.call_count == 3
+    assert sleeps == [0.01, 0.02]  # exponential backoff between attempts
+    assert "exhausted all 3 retries" in caplog.text
+
+
+async def test_back_to_back_transitions_delivered_in_order():
+    """Per-config queues deliver back-to-back transitions strictly in order
+    (the design property PushDeliveryEmitter relies on)."""
+    service = WebhookDeliveryService(max_retries=1, timeout=5.0)
+    await service.startup()
+
+    seen: list[str] = []
+
+    async def _fake_post(url, json=None, headers=None, extensions=None):
+        await asyncio.sleep(0.01)  # make interleaving possible if ordering broke
+        seen.append(json["status"]["state"])
+        return httpx.Response(200)
+
+    with patch.object(service._http_client, "post", side_effect=_fake_post):
+        config = _make_config(url="https://example.com/webhook")
+        for state in ("submitted", "working", "completed"):
+            await service.deliver([config], _make_task(state=state))
+        for _ in range(200):
+            if len(seen) == 3:
+                break
+            await asyncio.sleep(0.01)
+
+    await service.shutdown()
+
+    assert seen == ["submitted", "working", "completed"]
+
+
+async def test_queue_bounded_drops_oldest(caplog):
+    """A full per-config queue drops the oldest snapshot (with a warning)
+    instead of growing without bound."""
+    service = WebhookDeliveryService(max_retries=1, timeout=5.0, max_queue_size=2)
+    await service.startup()
+
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    seen: list[int] = []
+
+    async def _fake_post(url, json=None, headers=None, extensions=None):
+        entered.set()
+        await release.wait()
+        seen.append(json["metadata"]["n"])
+        return httpx.Response(200)
+
+    def _task_n(n: int) -> Task:
+        task = _make_task()
+        task.metadata = {"n": n}
+        return task
+
+    with patch.object(service._http_client, "post", side_effect=_fake_post):
+        config = _make_config(url="https://example.com/webhook")
+        await service.deliver([config], _task_n(1))
+        # Wait until snapshot 1 is in-flight (worker blocked in POST).
+        await asyncio.wait_for(entered.wait(), timeout=2)
+        # Queue capacity is 2: snapshots 2+3 fill it, 4 drops 2, 5 drops 3.
+        for n in (2, 3, 4, 5):
+            await service.deliver([config], _task_n(n))
+        release.set()
+        for _ in range(200):
+            if len(seen) == 3:
+                break
+            await asyncio.sleep(0.01)
+
+    await service.shutdown()
+
+    assert seen == [1, 4, 5]
+    assert "dropping oldest snapshot" in caplog.text
 
 
 async def test_idle_timeout_cleans_up_queue():

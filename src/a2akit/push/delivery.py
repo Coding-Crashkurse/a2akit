@@ -4,12 +4,17 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
+from urllib.parse import urlparse, urlunparse
 
 import httpx
 
 from a2akit.endpoints import _sanitize_task_for_client
-from a2akit.push.validation import validate_webhook_url
+from a2akit.push.validation import (
+    WebhookValidationPolicy,
+    resolve_webhook_url,
+    set_registration_policy,
+)
 
 if TYPE_CHECKING:
     from a2a_pydantic import v10
@@ -30,6 +35,12 @@ class WebhookDeliveryService:
     - Parallel between different configs (fan-out)
     - Non-blocking: delivery failures never affect task processing
     - Failed deliveries are logged, not persisted (no dead-letter queue)
+    - Bounded per-config queues with drop-oldest semantics (snapshots
+      are best-effort; the newest Task snapshot supersedes older ones)
+    - Anti-SSRF: connections are pinned to the IPs seen at validation
+      time (defeats DNS rebinding); the validation policy is published
+      via ``set_registration_policy`` so config registration rejects
+      unsafe URLs with the same rules
     """
 
     def __init__(
@@ -44,6 +55,7 @@ class WebhookDeliveryService:
         blocked_hosts: set[str] | None = None,
         idle_timeout: float = 300.0,
         shutdown_grace: float = 30.0,
+        max_queue_size: int = 100,
     ) -> None:
         self._max_retries = max_retries
         self._retry_base_delay = retry_base_delay
@@ -54,11 +66,20 @@ class WebhookDeliveryService:
         self._blocked_hosts = blocked_hosts
         self._idle_timeout = idle_timeout
         self._shutdown_grace = shutdown_grace
+        self._max_queue_size = max_queue_size
         self._http_client: httpx.AsyncClient | None = None
         # Per-config delivery queues ensure sequential ordering
         # Key: (task_id, config_id)
         self._delivery_queues: dict[tuple[str, str], asyncio.Queue[v10.Task | None]] = {}
         self._queue_workers: dict[tuple[str, str], asyncio.Task[None]] = {}
+        # Let registration-time validation apply the same rules delivery uses.
+        set_registration_policy(
+            WebhookValidationPolicy(
+                allow_http=allow_http,
+                allowed_hosts=allowed_hosts,
+                blocked_hosts=blocked_hosts,
+            )
+        )
 
     async def startup(self) -> None:
         """Initialize the HTTP client."""
@@ -77,8 +98,8 @@ class WebhookDeliveryService:
         alone returns on timeout but leaves tasks running, which would
         race against ``http_client.aclose()`` below.
         """
-        for queue in self._delivery_queues.values():
-            queue.put_nowait(None)  # Sentinel
+        for key in list(self._delivery_queues):
+            self._enqueue(key, None)  # Sentinel
         if self._queue_workers:
             workers = list(self._queue_workers.values())
             try:
@@ -118,7 +139,7 @@ class WebhookDeliveryService:
                 # Clean up stale references and start fresh.
                 self._delivery_queues.pop(queue_key, None)
                 self._queue_workers.pop(queue_key, None)
-                queue: asyncio.Queue[v10.Task | None] = asyncio.Queue()
+                queue: asyncio.Queue[v10.Task | None] = asyncio.Queue(maxsize=self._max_queue_size)
                 self._delivery_queues[queue_key] = queue
                 worker = asyncio.create_task(self._queue_worker(queue_key, queue, config))
                 self._queue_workers[queue_key] = worker
@@ -126,7 +147,31 @@ class WebhookDeliveryService:
                     lambda fut, k=queue_key: self._cleanup_queue(k, fut)  # type: ignore[misc]
                 )
 
-            self._delivery_queues[queue_key].put_nowait(task)
+            self._enqueue(queue_key, task)
+
+    def _enqueue(self, key: tuple[str, str], item: v10.Task | None) -> None:
+        """Enqueue with drop-oldest semantics.
+
+        Webhooks are best-effort Task snapshots — when a slow webhook
+        backs the queue up, the newest snapshot is more valuable than the
+        oldest, so the oldest is dropped (with a warning) instead of
+        growing the queue without bound.
+        """
+        queue = self._delivery_queues[key]
+        while True:
+            try:
+                queue.put_nowait(item)
+                return
+            except asyncio.QueueFull:
+                try:
+                    queue.get_nowait()
+                except asyncio.QueueEmpty:  # pragma: no cover - no await between full/get
+                    continue
+                logger.warning(
+                    "Webhook delivery queue %s full (maxsize %d); dropping oldest snapshot",
+                    key,
+                    self._max_queue_size,
+                )
 
     def _cleanup_queue(self, key: tuple[str, str], finished_worker: asyncio.Task[None]) -> None:
         if self._queue_workers.get(key) is finished_worker:
@@ -178,20 +223,37 @@ class WebhookDeliveryService:
         config: TaskPushNotificationConfig,
         task: v10.Task,
     ) -> None:
-        """Deliver to a single webhook with retries."""
+        """Deliver to a single webhook with retries.
+
+        The connection is pinned to an IP that passed SSRF validation:
+        the request URL carries the validated IP while the ``Host``
+        header (and, for HTTPS, the ``sni_hostname`` extension — used by
+        httpcore for both SNI and certificate hostname verification)
+        carries the original hostname. This closes the TOCTOU window
+        where DNS re-resolution at connect time could return a different
+        (internal) address than validation saw.
+        """
         url = config.url
 
-        if not await validate_webhook_url(
+        resolved = await resolve_webhook_url(
             url,
             allow_http=self._allow_http,
             allowed_hosts=self._allowed_hosts,
             blocked_hosts=self._blocked_hosts,
-        ):
+        )
+        if resolved is None:
             logger.warning("Rejected webhook URL: %s", url)
             return
 
         assert self._http_client is not None
         headers = _build_headers(config)
+        request_url = url
+        extensions: dict[str, Any] = {}
+        if resolved.pinned_ips:
+            request_url, host_header, sni_hostname = _pin_url(url, resolved.pinned_ips[0])
+            headers["Host"] = host_header
+            if sni_hostname is not None:
+                extensions["sni_hostname"] = sni_hostname
         # Webhooks are external clients — strip framework-internal metadata
         # keys (``_idempotency_key``, ``_a2akit_direct_reply`` etc.) exactly
         # like REST/SSE responses do. Otherwise the webhook payload leaks
@@ -203,9 +265,10 @@ class WebhookDeliveryService:
             async with self._semaphore:
                 try:
                     resp = await self._http_client.post(
-                        url,
+                        request_url,
                         json=payload,
                         headers=headers,
+                        extensions=extensions,
                     )
                     if 200 <= resp.status_code < 300:
                         return
@@ -237,6 +300,35 @@ class WebhookDeliveryService:
             url,
             self._max_retries,
         )
+
+
+def _pin_url(url: str, ip: str) -> tuple[str, str, str | None]:
+    """Rewrite *url* to connect to *ip* while preserving the original host.
+
+    Returns ``(pinned_url, host_header, sni_hostname)``. The Host header
+    keeps the original hostname (plus explicit port, if any); for HTTPS
+    the returned ``sni_hostname`` must be passed as an httpx request
+    extension so TLS SNI and certificate verification still use the
+    original hostname while the TCP connection goes to the validated IP.
+    """
+    parsed = urlparse(url)
+    host = parsed.hostname or ""
+    userinfo = ""
+    if parsed.username:
+        userinfo = parsed.username
+        if parsed.password:
+            userinfo += f":{parsed.password}"
+        userinfo += "@"
+    ip_ref = f"[{ip}]" if ":" in ip else ip
+    if parsed.port is None:
+        netloc = f"{userinfo}{ip_ref}"
+        host_header = host
+    else:
+        netloc = f"{userinfo}{ip_ref}:{parsed.port}"
+        host_header = f"{host}:{parsed.port}"
+    pinned_url = urlunparse(parsed._replace(netloc=netloc))
+    sni_hostname = host if parsed.scheme == "https" else None
+    return pinned_url, host_header, sni_hostname
 
 
 def _build_headers(config: TaskPushNotificationConfig | PushNotificationConfig) -> dict[str, str]:

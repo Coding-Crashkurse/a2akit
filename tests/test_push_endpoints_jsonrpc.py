@@ -16,6 +16,16 @@ class EchoWorker(Worker):
         await ctx.complete(f"Echo: {ctx.user_text}")
 
 
+@pytest.fixture(autouse=True)
+def _public_dns(monkeypatch):
+    """Deterministic DNS for registration-time webhook URL validation."""
+
+    async def _fake_getaddrinfo(hostname):
+        return [(2, 1, 6, "", ("93.184.216.34", 0))]
+
+    monkeypatch.setattr("a2akit.push.validation._getaddrinfo", _fake_getaddrinfo)
+
+
 def _make_push_app(*, push_enabled: bool = True) -> object:
     server = A2AServer(
         worker=EchoWorker(),
@@ -243,6 +253,32 @@ async def test_delete_config(push_client):
     assert resp.json()["result"] is None
 
     # Verify gone
+    resp = await push_client.post(
+        "/", json=_rpc("tasks/pushNotificationConfig/list", {"id": task_id})
+    )
+    assert resp.json()["result"] == []
+
+
+async def test_set_rejects_ssrf_url(push_client):
+    """SSRF-blocked webhook URLs produce a JSON-RPC error at registration
+    and the config is not stored."""
+    task_id = await _create_task(push_client)
+
+    resp = await push_client.post(
+        "/",
+        json=_rpc(
+            "tasks/pushNotificationConfig/set",
+            {
+                "taskId": task_id,
+                "pushNotificationConfig": {"url": "https://127.0.0.1/webhook"},
+            },
+        ),
+    )
+    data = resp.json()
+    assert "error" in data
+    assert "result" not in data
+
+    # Nothing was stored.
     resp = await push_client.post(
         "/", json=_rpc("tasks/pushNotificationConfig/list", {"id": task_id})
     )

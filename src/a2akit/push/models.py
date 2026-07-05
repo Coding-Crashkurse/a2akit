@@ -67,6 +67,7 @@ class TaskPushNotificationConfig(BaseModel):
         """Accept legacy v0.3 ``push_notification_config={...}`` construction."""
         if not isinstance(data, dict):
             return data
+        data = dict(data)  # shallow copy — never mutate the caller's dict
         nested = data.pop("push_notification_config", None) or data.pop(
             "pushNotificationConfig", None
         )
