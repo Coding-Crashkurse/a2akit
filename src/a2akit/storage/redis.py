@@ -15,7 +15,6 @@ from a2akit.storage.base import (
     META_CREATED_AT_KEY,
     META_LAST_MODIFIED_KEY,
     META_TENANT_KEY,
-    TERMINAL_STATES,
     ArtifactWrite,
     ConcurrencyError,
     ContextT,
@@ -124,8 +123,6 @@ redis.call('SET', idem_key, task_id, 'EX', 86400)
 
 return task_id
 """
-
-_TERMINAL_STATE_VALUES = {s.value for s in TERMINAL_STATES}
 
 
 class RedisStorage(Storage[ContextT]):

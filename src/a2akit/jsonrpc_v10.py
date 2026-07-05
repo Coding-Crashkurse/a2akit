@@ -284,8 +284,6 @@ async def _handle_send_message(
 def _check_streaming(request: Request, req_id: Any) -> JSONResponse | None:
     caps = getattr(request.app.state, "capabilities", None)
     if caps is not None and not caps.streaming:
-        desc = descriptor_for(Exception())  # → INTERNAL_ERROR
-        # Use UnsupportedOperationError mapping explicitly.
         from a2akit.storage.base import UnsupportedOperationError
 
         unsupported = UnsupportedOperationError("Streaming is not supported by this agent")

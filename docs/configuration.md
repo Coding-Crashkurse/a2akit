@@ -99,7 +99,6 @@ class Settings(BaseSettings):
     redis_event_bus_channel_prefix: str = "events:"
     redis_event_bus_stream_prefix: str = "eventlog:"
     redis_event_bus_stream_maxlen: int = 1000
-    redis_cancel_key_prefix: str = "cancel:"
     redis_cancel_ttl_s: int = 86400  # 24h
 
     # Push notification settings

@@ -90,20 +90,6 @@ def _build_parts(
     return parts
 
 
-def _extract_files(parts: list[v10.Part]) -> list[FileInfo]:
-    """Extract FileInfo wrappers from v10 message parts."""
-    return extract_files(parts)
-
-
-def _extract_data_parts(parts: list[v10.Part]) -> list[Any]:
-    """Extract structured data payloads from v10 message parts.
-
-    Returns a list of unwrapped ``v10.Value.root`` contents — typically
-    ``dict``/``list``/scalar depending on what the caller embedded.
-    """
-    return extract_data(parts)
-
-
 class TaskContext(ABC):
     """Execution context passed to ``Worker.handle()``.
 
@@ -878,7 +864,7 @@ class TaskContextImpl(TaskContext):
     @property
     def files(self) -> list[FileInfo]:
         """All file parts from the user message as typed wrappers."""
-        return _extract_files(self.parts)
+        return extract_files(self.parts)
 
     @property
     def data_parts(self) -> list[Any]:
@@ -888,7 +874,7 @@ class TaskContextImpl(TaskContext):
         (i.e. ``v10.Value.root``). Typically a dict/list/scalar depending on
         what the client embedded.
         """
-        return _extract_data_parts(self.parts)
+        return extract_data(self.parts)
 
     @property
     def reference_task_ids(self) -> list[str]:

@@ -11,10 +11,6 @@ if TYPE_CHECKING:
     from a2akit.storage.base import Storage
 
 
-class PushNotificationNotSupportedError(Exception):
-    """Raised when push notification endpoints are called but not enabled."""
-
-
 class PushConfigNotFoundError(Exception):
     """Raised when a specific push config is not found."""
 

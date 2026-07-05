@@ -169,7 +169,7 @@ async def test_max_concurrent_tasks():
 
 
 async def test_cancel_before_work_task_already_terminal():
-    """Cancel-before-work skips _mark_canceled if task is already terminal."""
+    """Cancel-before-work skips cancel_task_in_storage if task is already terminal."""
     storage = InMemoryStorage()
     async with InMemoryBroker() as broker, InMemoryEventBus() as event_bus:
         cancel_reg = InMemoryCancelRegistry()

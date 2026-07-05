@@ -1,5 +1,5 @@
-"""Tests for worker/base.py — _build_parts edge cases, _extract_files,
-_extract_data_parts, _versioned_update OCC retry, request_auth, emit_data_artifact."""
+"""Tests for worker/base.py — _build_parts edge cases, extract_files,
+extract_data, _versioned_update OCC retry, request_auth, emit_data_artifact."""
 
 from __future__ import annotations
 
@@ -22,6 +22,7 @@ from a2a_pydantic.v10 import Part as V10Part
 from a2a_pydantic.v10 import TaskState
 from asgi_lifespan import LifespanManager
 
+from a2akit._parts import extract_data, extract_files
 from a2akit.broker.memory import AnyioCancelScope
 from a2akit.event_bus.memory import InMemoryEventBus
 from a2akit.event_emitter import DefaultEventEmitter
@@ -30,8 +31,6 @@ from a2akit.storage.memory import InMemoryStorage
 from a2akit.worker.base import (
     TaskContextImpl,
     _build_parts,
-    _extract_data_parts,
-    _extract_files,
 )
 from conftest import _make_app
 
@@ -93,10 +92,10 @@ def test_build_parts_text_and_file():
 
 
 def test_extract_files_with_bytes():
-    """_extract_files extracts FileInfo from FileWithBytes parts."""
+    """extract_files extracts FileInfo from FileWithBytes parts."""
     content = b"test content"
     file_part = V10Part(raw=content, media_type="text/plain", filename="test.txt")
-    files = _extract_files([file_part])
+    files = extract_files([file_part])
     assert len(files) == 1
     assert files[0].content == content
     assert files[0].filename == "test.txt"
@@ -105,9 +104,9 @@ def test_extract_files_with_bytes():
 
 
 def test_extract_files_with_uri():
-    """_extract_files extracts FileInfo from FileWithUri parts."""
+    """extract_files extracts FileInfo from FileWithUri parts."""
     file_part = V10Part(url="https://example.com/test.pdf", media_type="application/pdf")
-    files = _extract_files([file_part])
+    files = extract_files([file_part])
     assert len(files) == 1
     assert files[0].url == "https://example.com/test.pdf"
     assert files[0].content is None
@@ -115,34 +114,34 @@ def test_extract_files_with_uri():
 
 
 def test_extract_files_skips_non_file_parts():
-    """_extract_files skips text and data parts."""
+    """extract_files skips text and data parts."""
     parts = [
         V10Part(text="hello"),
         V10Part(data={"key": "val"}),
     ]
-    files = _extract_files(parts)
+    files = extract_files(parts)
     assert len(files) == 0
 
 
-def test_extract_data_parts_with_dict():
-    """_extract_data_parts extracts dicts from DataPart."""
+def test_extract_data_with_dict():
+    """extract_data extracts dicts from DataPart."""
     parts = [
         V10Part(text="hello"),
         V10Part(data={"key": "value"}),
         V10Part(data={"another": "dict"}),
     ]
-    result = _extract_data_parts(parts)
+    result = extract_data(parts)
     assert len(result) == 2
     assert result[0] == {"key": "value"}
     assert result[1] == {"another": "dict"}
 
 
-def test_extract_data_parts_skips_text():
-    """_extract_data_parts skips TextPart."""
+def test_extract_data_skips_text():
+    """extract_data skips TextPart."""
     parts = [
         V10Part(text="just text"),
     ]
-    result = _extract_data_parts(parts)
+    result = extract_data(parts)
     assert len(result) == 0
 
 

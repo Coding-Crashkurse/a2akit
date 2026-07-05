@@ -270,7 +270,7 @@ def build_agent_card_v10(
         v10.AgentInterface(
             protocol_binding=primary_binding,
             protocol_version="1.0",
-            url=stripped if primary_binding == "JSONRPC" else f"{stripped}",
+            url=stripped,
             tenant="",
         )
     ]

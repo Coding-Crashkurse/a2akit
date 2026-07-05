@@ -459,8 +459,6 @@ class A2AServer:
 
         # Mount routers based on the configured protocol version(s).
         protocol = self._card_config.protocol
-        mounted_rest: set[str] = set()
-        mounted_jsonrpc: set[str] = set()
 
         def _transports_for_protocol(primary: str, additional: list[str]) -> set[str]:
             out = {primary.lower().replace(" ", "")}
@@ -476,10 +474,8 @@ class A2AServer:
                 from a2akit.endpoints_v10 import build_a2a_router_v10
 
                 app.include_router(build_a2a_router_v10())
-                mounted_rest.add("1.0")
             else:
                 app.include_router(build_a2a_router())
-                mounted_rest.add("0.3")
 
         # JSON-RPC mounting — one version only.
         if "jsonrpc" in wanted:
@@ -487,10 +483,8 @@ class A2AServer:
                 from a2akit.jsonrpc_v10 import build_jsonrpc_router_v10
 
                 app.include_router(build_jsonrpc_router_v10())
-                mounted_jsonrpc.add("1.0")
             else:
                 app.include_router(build_jsonrpc_router())
-                mounted_jsonrpc.add("0.3")
 
         app.include_router(
             build_discovery_router(

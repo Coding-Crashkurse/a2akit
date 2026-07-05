@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import uuid
 from collections.abc import AsyncIterator, Callable
-from contextlib import AsyncExitStack, asynccontextmanager
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
@@ -225,8 +225,7 @@ class WorkerAdapter:
             raise ValueError("message.task_id is missing")
 
         if self._task_lock_factory:
-            async with AsyncExitStack() as stack:
-                await stack.enter_async_context(self._task_lock_factory(task_id))
+            async with self._task_lock_factory(task_id):
                 await self._run_task_inner(
                     params, is_new_task=is_new_task, request_context=request_context
                 )
@@ -285,7 +284,7 @@ class WorkerAdapter:
                 if await self._cancel_registry.is_cancelled(task_id):
                     current = await self._storage.load_task(task_id)
                     if not current or current.status.state not in TERMINAL_STATES:
-                        await self._mark_canceled(
+                        await cancel_task_in_storage(
                             self._storage, self._emitter, task_id, context_id
                         )
                     if span:
@@ -350,7 +349,7 @@ class WorkerAdapter:
 
                     if cancel_event.is_set() and not ctx.turn_ended:
                         pending = await self._drain_pending_artifacts(ctx, task_id)
-                        await self._mark_canceled(
+                        await cancel_task_in_storage(
                             self._storage,
                             self._emitter,
                             task_id,
@@ -366,7 +365,7 @@ class WorkerAdapter:
                             if span:
                                 span.add_event(EVENT_CANCEL_REQUESTED)
                             pending = await self._drain_pending_artifacts(ctx, task_id)
-                            await self._mark_canceled(
+                            await cancel_task_in_storage(
                                 self._storage,
                                 self._emitter,
                                 task_id,
@@ -478,8 +477,8 @@ class WorkerAdapter:
         flushing writes artifacts in a separate transaction, which is
         racy against the force-cancel path (the flush may hit
         ``ConcurrencyError``, re-buffer, and return silently — meaning
-        the subsequent ``_mark_failed``/``_mark_canceled`` would miss
-        them and the artifacts would be lost for polling clients).
+        the subsequent ``_mark_failed``/``cancel_task_in_storage`` would
+        miss them and the artifacts would be lost for polling clients).
         Instead, we pull them out of the buffer and pass them through
         to the terminal write so the state change and the artifacts
         land in a single storage transaction.
@@ -487,18 +486,6 @@ class WorkerAdapter:
         pending = ctx._pending_artifacts
         ctx._pending_artifacts = []
         return list(pending)
-
-    @staticmethod
-    async def _mark_canceled(
-        storage: Storage,
-        emitter: EventEmitter,
-        task_id: str,
-        context_id: str | None,
-        *,
-        artifacts: list[Any] | None = None,
-    ) -> None:
-        """Persist canceled state (with reason) and emit a final status event."""
-        await cancel_task_in_storage(storage, emitter, task_id, context_id, artifacts=artifacts)
 
     @staticmethod
     async def _mark_failed(
