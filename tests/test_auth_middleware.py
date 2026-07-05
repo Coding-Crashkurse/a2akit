@@ -110,6 +110,38 @@ async def test_bearer_invalid_token():
         await mgr.__aexit__(None, None, None)
 
 
+@pytest.mark.asyncio
+async def test_bearer_scheme_case_insensitive():
+    """RFC 7235: the auth scheme is case-insensitive ('bearer' == 'Bearer')."""
+    client, mgr = await _make_app_client([BearerTokenMiddleware(verify=_verify_bearer)])
+    try:
+        resp = await client.post(
+            "/v1/message:send",
+            json=_send_body(),
+            headers={"Authorization": "bearer good-token"},
+        )
+        assert resp.status_code == 200
+    finally:
+        await client.aclose()
+        await mgr.__aexit__(None, None, None)
+
+
+@pytest.mark.asyncio
+async def test_bearer_scheme_only_rejected():
+    """A bare 'Bearer' with no token stays fail-closed."""
+    client, mgr = await _make_app_client([BearerTokenMiddleware(verify=_verify_bearer)])
+    try:
+        resp = await client.post(
+            "/v1/message:send",
+            json=_send_body(),
+            headers={"Authorization": "Bearer"},
+        )
+        assert resp.status_code == 401
+    finally:
+        await client.aclose()
+        await mgr.__aexit__(None, None, None)
+
+
 # -- ApiKey tests --
 
 

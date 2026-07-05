@@ -223,8 +223,6 @@ class JsonRpcV10Transport(Transport):
         extra_headers: dict[str, str] | None = None,
         task_id: str | None = None,
     ) -> AsyncIterator[ClientStreamEvent]:
-        from a2akit.client.result import StreamEvent as ClientStreamEvent
-
         headers = extra_headers or self._headers()
         async with self._http.stream(
             "POST",
@@ -257,54 +255,78 @@ class JsonRpcV10Transport(Transport):
                 elif not line and data_lines:
                     payload = "\n".join(data_lines)
                     data_lines = []
-                    if not payload:
-                        current_event_id = None
-                        continue
-                    try:
-                        outer = json.loads(payload)
-                    except json.JSONDecodeError as exc:
-                        raise ProtocolError(f"Invalid JSON in SSE data: {exc}") from exc
-                    # Unwrap JSON-RPC success envelope → ``result`` carries the
-                    # v1.0 wrapped discriminator form.
-                    if isinstance(outer, dict) and "error" in outer:
-                        self._handle_response(outer, task_id=task_id)
-                        return
-                    raw = outer.get("result", outer) if isinstance(outer, dict) else outer
-                    if not isinstance(raw, dict):
-                        raise ProtocolError(f"Unexpected SSE payload: {type(raw).__name__}")
-                    if "taskStatusUpdate" in raw:
-                        v10_evt = TaskStatusUpdateEvent.model_validate(raw["taskStatusUpdate"])
-                        yield ClientStreamEvent.from_raw(
-                            convert_to_v03(v10_evt), event_id=current_event_id
+                    if payload:
+                        event = self._decode_sse_payload(
+                            payload, event_id=current_event_id, task_id=task_id
                         )
-                    elif "taskArtifactUpdate" in raw:
-                        v10_art = TaskArtifactUpdateEvent.model_validate(raw["taskArtifactUpdate"])
-                        yield ClientStreamEvent.from_raw(
-                            convert_to_v03(v10_art), event_id=current_event_id
-                        )
-                    elif "task" in raw:
-                        yield ClientStreamEvent.from_raw(
-                            convert_to_v03(Task.model_validate(raw["task"])),
-                            event_id=current_event_id,
-                        )
-                    elif "message" in raw:
-                        yield ClientStreamEvent.from_raw(
-                            convert_to_v03(Message.model_validate(raw["message"])),
-                            event_id=current_event_id,
-                        )
-                    elif "status" in raw and "id" in raw:
-                        yield ClientStreamEvent.from_raw(
-                            convert_to_v03(Task.model_validate(raw)),
-                            event_id=current_event_id,
-                        )
-                    elif "role" in raw and "parts" in raw:
-                        yield ClientStreamEvent.from_raw(
-                            convert_to_v03(Message.model_validate(raw)),
-                            event_id=current_event_id,
-                        )
-                    else:
-                        raise ProtocolError(f"Unknown v1.0 JSON-RPC SSE event shape: {list(raw)}")
+                        if event is None:
+                            return
+                        yield event
                     current_event_id = None
+
+            # Flush remaining data (stream may end without a trailing blank line).
+            if data_lines:
+                payload = "\n".join(data_lines)
+                if payload:
+                    event = self._decode_sse_payload(
+                        payload, event_id=current_event_id, task_id=task_id
+                    )
+                    if event is not None:
+                        yield event
+
+    def _decode_sse_payload(
+        self,
+        payload: str,
+        *,
+        event_id: str | None,
+        task_id: str | None,
+    ) -> ClientStreamEvent | None:
+        """Decode one SSE data payload into a StreamEvent.
+
+        Returns ``None`` when the payload was a JSON-RPC error envelope that
+        ``_handle_response`` swallowed (caller should stop the stream).
+        """
+        from a2akit.client.result import StreamEvent as ClientStreamEvent
+
+        try:
+            outer = json.loads(payload)
+        except json.JSONDecodeError as exc:
+            raise ProtocolError(f"Invalid JSON in SSE data: {exc}") from exc
+        # Unwrap JSON-RPC success envelope → ``result`` carries the
+        # v1.0 wrapped discriminator form.
+        if isinstance(outer, dict) and "error" in outer:
+            self._handle_response(outer, task_id=task_id)
+            return None
+        raw = outer.get("result", outer) if isinstance(outer, dict) else outer
+        if not isinstance(raw, dict):
+            raise ProtocolError(f"Unexpected SSE payload: {type(raw).__name__}")
+        if "taskStatusUpdate" in raw:
+            v10_evt = TaskStatusUpdateEvent.model_validate(raw["taskStatusUpdate"])
+            return ClientStreamEvent.from_raw(convert_to_v03(v10_evt), event_id=event_id)
+        if "taskArtifactUpdate" in raw:
+            v10_art = TaskArtifactUpdateEvent.model_validate(raw["taskArtifactUpdate"])
+            return ClientStreamEvent.from_raw(convert_to_v03(v10_art), event_id=event_id)
+        if "task" in raw:
+            return ClientStreamEvent.from_raw(
+                convert_to_v03(Task.model_validate(raw["task"])),
+                event_id=event_id,
+            )
+        if "message" in raw:
+            return ClientStreamEvent.from_raw(
+                convert_to_v03(Message.model_validate(raw["message"])),
+                event_id=event_id,
+            )
+        if "status" in raw and "id" in raw:
+            return ClientStreamEvent.from_raw(
+                convert_to_v03(Task.model_validate(raw)),
+                event_id=event_id,
+            )
+        if "role" in raw and "parts" in raw:
+            return ClientStreamEvent.from_raw(
+                convert_to_v03(Message.model_validate(raw)),
+                event_id=event_id,
+            )
+        raise ProtocolError(f"Unknown v1.0 JSON-RPC SSE event shape: {list(raw)}")
 
     # -- push + card + health --------------------------------------------------
 

@@ -173,7 +173,7 @@ class StreamEvent:
     artifact_id: str | None
     is_final: bool
 
-    raw: Task | TaskStatusUpdateEvent | TaskArtifactUpdateEvent
+    raw: Task | Message | TaskStatusUpdateEvent | TaskArtifactUpdateEvent
 
     task_id: str | None = None
     event_id: str | None = None
@@ -181,11 +181,26 @@ class StreamEvent:
     @classmethod
     def from_raw(
         cls,
-        event: Task | TaskStatusUpdateEvent | TaskArtifactUpdateEvent,
+        event: Task | Message | TaskStatusUpdateEvent | TaskArtifactUpdateEvent,
         *,
         event_id: str | None = None,
     ) -> StreamEvent:
         """Build StreamEvent from a raw protocol event."""
+        if isinstance(event, Message):
+            # Direct-reply Message in a stream — the reply ends the stream.
+            parts = list(event.parts) if event.parts else []
+            return cls(
+                kind="message",
+                state=None,
+                text=_extract_text_from_parts(parts),
+                data=_extract_data_from_parts(parts),
+                artifact_id=None,
+                is_final=True,
+                raw=event,
+                task_id=event.task_id,
+                event_id=event_id,
+            )
+
         if isinstance(event, Task):
             task_id = event.id
             state = event.status.state.value if event.status else None
