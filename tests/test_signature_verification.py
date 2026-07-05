@@ -93,7 +93,7 @@ def test_canonicalize_strips_signatures_field() -> None:
     assert b'"b"' in canonical
 
 
-def test_valid_signature_verifies() -> None:
+async def test_valid_signature_verifies() -> None:
     key = _make_rsa_key()
     card_dict = _minimal_card_dict()
     raw_body, sig = _sign_card(card_dict, key)
@@ -106,10 +106,10 @@ def test_valid_signature_verifies() -> None:
     card = v10.AgentCard.model_validate(card_dict_with_sig)
 
     # Should not raise.
-    verify_agent_card(card, raw_body, mode="soft", trusted_keys=[key])
+    await verify_agent_card(card, raw_body, mode="soft", trusted_keys=[key])
 
 
-def test_tampered_body_raises() -> None:
+async def test_tampered_body_raises() -> None:
     key = _make_rsa_key()
     card_dict = _minimal_card_dict()
     raw_body, sig = _sign_card(card_dict, key)
@@ -124,36 +124,36 @@ def test_tampered_body_raises() -> None:
     card = v10.AgentCard.model_validate(card_dict_with_sig)
 
     with pytest.raises(AgentCardSignatureError):
-        verify_agent_card(card, tampered, mode="soft", trusted_keys=[key])
+        await verify_agent_card(card, tampered, mode="soft", trusted_keys=[key])
 
 
-def test_strict_mode_rejects_unsigned_card() -> None:
+async def test_strict_mode_rejects_unsigned_card() -> None:
     card_dict = _minimal_card_dict()
     card = v10.AgentCard.model_validate(card_dict)
     assert not card.signatures
     raw_body = bytes(rfc8785.dumps(card_dict))
 
     with pytest.raises(AgentCardSignatureError, match="no signatures"):
-        verify_agent_card(card, raw_body, mode="strict")
+        await verify_agent_card(card, raw_body, mode="strict")
 
 
-def test_soft_mode_allows_unsigned_card() -> None:
+async def test_soft_mode_allows_unsigned_card() -> None:
     card_dict = _minimal_card_dict()
     card = v10.AgentCard.model_validate(card_dict)
     raw_body = bytes(rfc8785.dumps(card_dict))
 
     # Should NOT raise — only warn.
-    verify_agent_card(card, raw_body, mode="soft")
+    await verify_agent_card(card, raw_body, mode="soft")
 
 
-def test_off_mode_skips_everything() -> None:
+async def test_off_mode_skips_everything() -> None:
     card_dict = _minimal_card_dict()
     card = v10.AgentCard.model_validate(card_dict)
     # Mode "off" must never raise, even with garbage bytes.
-    verify_agent_card(card, b"garbage", mode="off")
+    await verify_agent_card(card, b"garbage", mode="off")
 
 
-def test_unknown_kid_without_jku_raises() -> None:
+async def test_unknown_kid_without_jku_raises() -> None:
     key = _make_rsa_key(kid="signing-key")
     card_dict = _minimal_card_dict()
     raw_body, sig = _sign_card(card_dict, key)
@@ -168,7 +168,7 @@ def test_unknown_kid_without_jku_raises() -> None:
     # any trusted key and no jku is allowed.
     other_key = _make_rsa_key(kid="other-key")
     with pytest.raises(AgentCardSignatureError):
-        verify_agent_card(
+        await verify_agent_card(
             card,
             raw_body,
             mode="strict",
@@ -177,14 +177,13 @@ def test_unknown_kid_without_jku_raises() -> None:
         )
 
 
-def test_jku_host_allowlist_enforced() -> None:
-    """Signature with jku pointing outside the allowlist must be rejected."""
-    key = _make_rsa_key()
-    card_dict = _minimal_card_dict()
+def _sign_card_with_jku(
+    card_dict: dict[str, Any], key: jwk.JWK, jku: str
+) -> tuple[bytes, v10.AgentCard]:
+    """Sign the card with a ``jku`` header; return (raw_body, parsed card)."""
     payload = bytes(rfc8785.dumps({k: v for k, v in card_dict.items() if k != "signatures"}))
 
-    # Sign with a jku header.
-    protected = {"alg": "RS256", "kid": key.kid, "jku": "https://evil.example/jwks.json"}
+    protected = {"alg": "RS256", "kid": key.kid, "jku": jku}
     sig_obj = jws.JWS(payload)
     sig_obj.add_signature(key, alg="RS256", protected=json.dumps(protected))
     serialized = json.loads(sig_obj.serialize())
@@ -198,11 +197,19 @@ def test_jku_host_allowlist_enforced() -> None:
         sig.model_dump(mode="json", by_alias=True, exclude_none=True)
     ]
     card = v10.AgentCard.model_validate(card_dict_with_sig)
-    raw_body = bytes(rfc8785.dumps(card_dict_with_sig))
+    return bytes(rfc8785.dumps(card_dict_with_sig)), card
+
+
+async def test_jku_host_allowlist_enforced() -> None:
+    """Signature with jku pointing outside the allowlist must be rejected."""
+    key = _make_rsa_key()
+    raw_body, card = _sign_card_with_jku(
+        _minimal_card_dict(), key, "https://evil.example/jwks.json"
+    )
 
     # trusted_keys has no match → falls through to jku → host blocked.
     with pytest.raises(AgentCardSignatureError, match="not in allowed_jku_hosts"):
-        verify_agent_card(
+        await verify_agent_card(
             card,
             raw_body,
             mode="strict",
@@ -210,3 +217,76 @@ def test_jku_host_allowlist_enforced() -> None:
             allow_jku=True,
             allowed_jku_hosts={"trusted.example"},
         )
+
+
+async def test_jku_ignored_without_allowlist(monkeypatch: pytest.MonkeyPatch) -> None:
+    """With allowed_jku_hosts=None (default), jku is never fetched.
+
+    The jku URL is attacker-controlled — without an explicit allowlist the
+    key must come from trusted_keys, and no HTTP request may happen.
+    """
+    import httpx
+
+    def _no_fetch(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("jku fetch attempted without allowed_jku_hosts")
+
+    monkeypatch.setattr(httpx, "AsyncClient", _no_fetch)
+
+    key = _make_rsa_key()
+    raw_body, card = _sign_card_with_jku(
+        _minimal_card_dict(), key, "https://attacker.example/jwks.json"
+    )
+
+    with pytest.raises(AgentCardSignatureError, match="No signature key resolvable"):
+        await verify_agent_card(
+            card,
+            raw_body,
+            mode="strict",
+            trusted_keys=None,
+            allow_jku=True,
+            allowed_jku_hosts=None,
+        )
+
+
+async def test_jku_honored_with_matching_allowlist(monkeypatch: pytest.MonkeyPatch) -> None:
+    """jku fetch happens (and verifies) when the host is explicitly allowlisted."""
+    import httpx
+
+    key = _make_rsa_key()
+    jwks_json = json.dumps({"keys": [json.loads(key.export_public())]})
+
+    class _FakeResponse:
+        text = jwks_json
+
+        def raise_for_status(self) -> None:
+            pass
+
+    class _FakeAsyncClient:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            pass
+
+        async def __aenter__(self) -> _FakeAsyncClient:
+            return self
+
+        async def __aexit__(self, *args: Any) -> None:
+            pass
+
+        async def get(self, url: str) -> _FakeResponse:
+            assert url == "https://trusted.example/jwks.json"
+            return _FakeResponse()
+
+    monkeypatch.setattr(httpx, "AsyncClient", _FakeAsyncClient)
+
+    raw_body, card = _sign_card_with_jku(
+        _minimal_card_dict(), key, "https://trusted.example/jwks.json"
+    )
+
+    # Should not raise — key resolved via the allowlisted jku.
+    await verify_agent_card(
+        card,
+        raw_body,
+        mode="strict",
+        trusted_keys=None,
+        allow_jku=True,
+        allowed_jku_hosts={"trusted.example"},
+    )

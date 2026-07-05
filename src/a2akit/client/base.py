@@ -135,6 +135,9 @@ class A2AClient:
         # Spec §19 — JWS signature verification on the discovery card.
         # ``"off"``: skip; ``"soft"`` (default): verify if present, warn on
         # missing; ``"strict"``: require at least one verifiable signature.
+        # jku fetching only happens when an explicit ``allowed_jku_hosts``
+        # allowlist is provided; with the default (``None``) verification
+        # keys must come from ``trusted_signing_keys``.
         verify_signatures: str = "soft",
         trusted_signing_keys: list[Any] | None = None,
         allow_jku_fetch: bool = True,
@@ -216,13 +219,15 @@ class A2AClient:
             except Exception as exc:
                 raise AgentNotFoundError(self._url, f"Invalid agent card: {exc}") from exc
 
-        # JWS signature verification (spec §19). Today the client parses v0.3
-        # AgentCards on the wire; when the native-v1.0 card arrives (see
-        # ``supportedInterfaces``), we verify with the a2akit._signatures
-        # helper. For v0.3 cards the library doesn't define a signatures
-        # field, so the check is a no-op unless the caller opts in explicitly.
+        # JWS signature verification (spec §19). For v1.0 cards, verify
+        # against the parsed v1.0 card — the v0.3 projection built above never
+        # carries ``signatures``, so verifying against it would silently skip
+        # (soft) or spuriously fail (strict) validly signed cards. For v0.3
+        # cards the library doesn't define a signatures field, so the check is
+        # a no-op unless the caller opts in explicitly.
         if self._verify_signatures != "off":
-            sig_attr = getattr(self._agent_card, "signatures", None)
+            card_to_verify = self._card_v10 if self._card_v10 is not None else self._agent_card
+            sig_attr = getattr(card_to_verify, "signatures", None)
             if sig_attr or self._verify_signatures == "strict":
                 try:
                     from a2akit._signatures import (
@@ -236,8 +241,8 @@ class A2AClient:
                         "Install with: pip install a2akit[signatures]",
                     ) from exc
                 try:
-                    verify_agent_card(
-                        self._agent_card,
+                    await verify_agent_card(
+                        card_to_verify,
                         resp.content,
                         mode=self._verify_signatures,
                         trusted_keys=self._trusted_signing_keys,
@@ -277,10 +282,10 @@ class A2AClient:
             logging.getLogger(__name__).info(logger_msg)
 
         errors: list[tuple[str, str, Exception]] = []
-        transport: Transport | None = None
         for url, proto, wire_version in candidates:
             if wire_version not in supported:
                 continue
+            transport: Transport | None = None
             try:
                 transport = self._create_transport(proto, url, wire_version=wire_version)
                 await transport.health_check()
@@ -288,6 +293,10 @@ class A2AClient:
                 errors.append((url, proto, exc))
                 continue
             except Exception as exc:
+                # Transport construction itself failed — try next candidate.
+                if transport is None:
+                    errors.append((url, proto, exc))
+                    continue
                 # Server errors (5xx) indicate the backend is down —
                 # skip to next transport for fallback.
                 from a2akit.client.errors import ProtocolError
@@ -295,10 +304,11 @@ class A2AClient:
                 if isinstance(exc, ProtocolError) and "HTTP 5" in str(exc):
                     errors.append((url, proto, exc))
                     continue
+                if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code >= 500:
+                    errors.append((url, proto, exc))
+                    continue
                 # Other errors (404, unexpected) — accept transport anyway
                 # (health endpoint may not exist, backwards compat).
-                if transport is None:
-                    continue
 
             self._transport = transport
             self._active_protocol = proto

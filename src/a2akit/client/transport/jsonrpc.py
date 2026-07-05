@@ -26,13 +26,6 @@ if TYPE_CHECKING:
 
 A2A_VERSION = "0.3.0"
 
-# JSON-RPC / A2A error codes → exception mapping
-_ERROR_MAP: dict[int, type[A2AClientError]] = {
-    -32001: TaskNotFoundError,
-    -32002: TaskNotCancelableError,
-    -32004: TaskTerminalError,
-}
-
 
 class JsonRpcTransport(Transport):
     """JSON-RPC 2.0 transport implementation."""
@@ -73,14 +66,13 @@ class JsonRpcTransport(Transport):
                     detail=str(message),
                 )
 
-            exc_cls = _ERROR_MAP.get(code)
-            if exc_cls is not None:
-                if exc_cls is TaskNotFoundError:
-                    raise TaskNotFoundError(task_id or "unknown")
-                if exc_cls is TaskNotCancelableError:
-                    raise TaskNotCancelableError(task_id or "unknown")
-                if exc_cls is TaskTerminalError:
-                    raise TaskTerminalError(task_id or "unknown")
+            # JSON-RPC / A2A error codes → typed exceptions.
+            if code == -32001:
+                raise TaskNotFoundError(task_id or "unknown")
+            if code == -32002:
+                raise TaskNotCancelableError(task_id or "unknown")
+            if code == -32004:
+                raise TaskTerminalError(task_id or "unknown")
             if code == -32602:
                 raise A2AClientError(message)
             raise ProtocolError(f"JSON-RPC error {code}: {message}")

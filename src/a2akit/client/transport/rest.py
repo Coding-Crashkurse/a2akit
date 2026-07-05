@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
+from urllib.parse import quote
 
 import httpx
 from a2a_pydantic.v03 import AgentCard, Message, MessageSendParams, Task
@@ -134,7 +135,7 @@ class RestTransport(Transport):
         if history_length is not None:
             params["historyLength"] = history_length
         response = await self._http.get(
-            self._url(f"/tasks/{task_id}"),
+            self._url(f"/tasks/{quote(task_id, safe='')}"),
             params=params,
             headers=self._headers(),
         )
@@ -154,7 +155,7 @@ class RestTransport(Transport):
     async def cancel_task(self, task_id: str) -> Task:
         """POST /v1/tasks/{task_id}:cancel."""
         response = await self._http.post(
-            self._url(f"/tasks/{task_id}:cancel"),
+            self._url(f"/tasks/{quote(task_id, safe='')}:cancel"),
             headers=self._headers(),
         )
         self._check_error(response, task_id=task_id)
@@ -169,7 +170,7 @@ class RestTransport(Transport):
             headers["Last-Event-ID"] = last_event_id
         async with self._http.stream(
             "POST",
-            self._url(f"/tasks/{task_id}:subscribe"),
+            self._url(f"/tasks/{quote(task_id, safe='')}:subscribe"),
             headers=headers,
             timeout=httpx.Timeout(5.0, read=None),
         ) as response:
@@ -187,7 +188,7 @@ class RestTransport(Transport):
     async def set_push_config(self, task_id: str, config: dict[str, Any]) -> dict[str, Any]:
         """POST /v1/tasks/{task_id}/pushNotificationConfigs."""
         response = await self._http.post(
-            self._url(f"/tasks/{task_id}/pushNotificationConfigs"),
+            self._url(f"/tasks/{quote(task_id, safe='')}/pushNotificationConfigs"),
             json=config,
             headers=self._headers(),
         )
@@ -196,9 +197,9 @@ class RestTransport(Transport):
 
     async def get_push_config(self, task_id: str, config_id: str | None = None) -> dict[str, Any]:
         """GET /v1/tasks/{task_id}/pushNotificationConfigs/{configId}."""
-        path = f"/tasks/{task_id}/pushNotificationConfigs"
+        path = f"/tasks/{quote(task_id, safe='')}/pushNotificationConfigs"
         if config_id:
-            path = f"/tasks/{task_id}/pushNotificationConfigs/{config_id}"
+            path = f"/tasks/{quote(task_id, safe='')}/pushNotificationConfigs/{quote(config_id, safe='')}"
         response = await self._http.get(
             self._url(path),
             headers=self._headers(),
@@ -209,7 +210,7 @@ class RestTransport(Transport):
     async def list_push_configs(self, task_id: str) -> list[dict[str, Any]]:
         """GET /v1/tasks/{task_id}/pushNotificationConfigs."""
         response = await self._http.get(
-            self._url(f"/tasks/{task_id}/pushNotificationConfigs"),
+            self._url(f"/tasks/{quote(task_id, safe='')}/pushNotificationConfigs"),
             headers=self._headers(),
         )
         self._check_error(response, task_id=task_id)
@@ -218,7 +219,9 @@ class RestTransport(Transport):
     async def delete_push_config(self, task_id: str, config_id: str) -> None:
         """DELETE /v1/tasks/{task_id}/pushNotificationConfigs/{configId}."""
         response = await self._http.delete(
-            self._url(f"/tasks/{task_id}/pushNotificationConfigs/{config_id}"),
+            self._url(
+                f"/tasks/{quote(task_id, safe='')}/pushNotificationConfigs/{quote(config_id, safe='')}"
+            ),
             headers=self._headers(),
         )
         self._check_error(response, task_id=task_id)

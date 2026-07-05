@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hmac
 from typing import TYPE_CHECKING, Any
 
 from a2akit.errors import AuthenticationRequiredError
@@ -62,9 +63,10 @@ class BearerTokenMiddleware(A2AMiddleware):
         if request.url.path in self._exclude_paths:
             return
         auth = request.headers.get("Authorization", "")
-        if not auth.startswith("Bearer "):
+        # RFC 7235: the auth scheme is case-insensitive.
+        scheme, _, token = auth.partition(" ")
+        if scheme.casefold() != "bearer" or not token:
             raise AuthenticationRequiredError(scheme="Bearer", realm=self._realm)
-        token = auth[7:]
         claims = await self._verify(token)
         if claims is None:
             raise AuthenticationRequiredError(scheme="Bearer", realm=self._realm)
@@ -109,6 +111,7 @@ class ApiKeyMiddleware(A2AMiddleware):
         if request.url.path in self._exclude_paths:
             return
         key = request.headers.get(self._header)
-        if not key or key not in self._valid_keys:
+        # Constant-time comparison over all keys to avoid timing side channels.
+        if not key or not any(hmac.compare_digest(key, k) for k in self._valid_keys):
             raise AuthenticationRequiredError(scheme="ApiKey")
         envelope.context["api_key"] = key

@@ -13,8 +13,12 @@ canonicalization) before trusting the card.
 
 Key resolution priority:
 1. ``kid`` in the JWS header matches an entry in ``trusted_keys``.
-2. ``jku`` header (RFC 7517 JWKS URL) — fetched over HTTPS only, host must be
-   in ``allowed_jku_hosts`` if the caller passes that set.
+2. ``jku`` header (RFC 7517 JWKS URL) — only honored when the caller provides
+   an explicit ``allowed_jku_hosts`` allowlist (and ``allow_jku`` is True);
+   fetched over HTTPS only, host must be in the allowlist. Without an
+   allowlist, jku is ignored: the key must come from ``trusted_keys``.
+   (The jku URL is attacker-controlled — fetching keys from it without an
+   allowlist would make verification self-referential.)
 3. Otherwise raise :class:`AgentCardSignatureError`.
 """
 
@@ -63,7 +67,7 @@ def _b64url_decode(value: str) -> bytes:
     return bytes(_bud(value))
 
 
-def _resolve_key(
+async def _resolve_key(
     header: dict[str, Any],
     *,
     trusted_keys: list[jwk.JWK] | None,
@@ -73,6 +77,10 @@ def _resolve_key(
     """Pick a verification key from the header.
 
     Priority: trusted_keys[kid] > jku-fetched JWKS > raise.
+
+    jku fetching is only performed when the caller provides an explicit
+    ``allowed_jku_hosts`` allowlist — with ``allowed_jku_hosts=None`` the
+    jku header is ignored and the key must come from ``trusted_keys``.
     """
     kid = header.get("kid")
     if trusted_keys and kid:
@@ -80,7 +88,7 @@ def _resolve_key(
             if k.kid == kid:
                 return k
 
-    if allow_jku and "jku" in header:
+    if allow_jku and allowed_jku_hosts is not None and "jku" in header:
         from urllib.parse import urlparse
 
         import httpx
@@ -89,10 +97,11 @@ def _resolve_key(
         parsed = urlparse(url)
         if parsed.scheme != "https":
             raise AgentCardSignatureError("jku must be HTTPS for safety")
-        if allowed_jku_hosts is not None and parsed.hostname not in allowed_jku_hosts:
+        if parsed.hostname not in allowed_jku_hosts:
             raise AgentCardSignatureError(f"jku host {parsed.hostname!r} not in allowed_jku_hosts")
         try:
-            resp = httpx.get(url, timeout=10.0)
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.get(url)
             resp.raise_for_status()
             jwks = jwk.JWKSet.from_json(resp.text)
         except Exception as exc:
@@ -108,11 +117,11 @@ def _resolve_key(
         raise AgentCardSignatureError("Cannot pick JWKS key without kid")
 
     raise AgentCardSignatureError(
-        "No signature key resolvable: provide trusted_keys or enable jku fetching"
+        "No signature key resolvable: provide trusted_keys or an allowed_jku_hosts allowlist"
     )
 
 
-def verify_signature(
+async def verify_signature(
     card_dict: dict[str, Any],
     signature: v10.AgentCardSignature,
     *,
@@ -139,7 +148,7 @@ def verify_signature(
 
     payload = canonicalize_card_for_signing(card_dict)
     header = json.loads(_b64url_decode(signature.protected).decode("utf-8"))
-    key = _resolve_key(
+    key = await _resolve_key(
         header,
         trusted_keys=trusted_keys,
         allow_jku=allow_jku,
@@ -154,7 +163,7 @@ def verify_signature(
     return True
 
 
-def verify_agent_card(
+async def verify_agent_card(
     card: v10.AgentCard,
     raw_body: bytes,
     *,
@@ -171,6 +180,10 @@ def verify_agent_card(
         verification failure.
       - ``"strict"`` — require at least one signature AND verify; raise on any
         missing/failure.
+
+    jku fetching is disabled unless an explicit ``allowed_jku_hosts``
+    allowlist is provided — with ``allowed_jku_hosts=None`` verification
+    keys must come from ``trusted_keys``.
 
     ``raw_body`` is the bytes the server sent (before any client-side
     re-serialization). Required because JCS canonicalization is sensitive to
@@ -192,7 +205,7 @@ def verify_agent_card(
     last_error: AgentCardSignatureError | None = None
     for sig in signatures:
         try:
-            verify_signature(
+            await verify_signature(
                 card_dict,
                 sig,
                 trusted_keys=trusted_keys,

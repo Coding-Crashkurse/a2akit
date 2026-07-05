@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 from typing import TYPE_CHECKING, Any
+from urllib.parse import quote
 
 import httpx
 from a2a_pydantic import convert_to_v03
@@ -175,7 +176,7 @@ class RestV10Transport(Transport):
         if history_length is not None:
             params["historyLength"] = history_length
         response = await self._http.get(
-            self._url(f"/tasks/{task_id}"), params=params, headers=self._headers()
+            self._url(f"/tasks/{quote(task_id, safe='')}"), params=params, headers=self._headers()
         )
         self._check_error(response, task_id=task_id)
         return convert_to_v03(Task.model_validate(response.json()))
@@ -200,7 +201,7 @@ class RestV10Transport(Transport):
 
     async def cancel_task(self, task_id: str) -> V03Task:
         response = await self._http.post(
-            self._url(f"/tasks/{task_id}:cancel"), headers=self._headers()
+            self._url(f"/tasks/{quote(task_id, safe='')}:cancel"), headers=self._headers()
         )
         self._check_error(response, task_id=task_id)
         return convert_to_v03(Task.model_validate(response.json()))
@@ -238,7 +239,7 @@ class RestV10Transport(Transport):
             headers["Last-Event-ID"] = last_event_id
         async with self._http.stream(
             "POST",
-            self._url(f"/tasks/{task_id}:subscribe"),
+            self._url(f"/tasks/{quote(task_id, safe='')}:subscribe"),
             headers=headers,
             timeout=httpx.Timeout(5.0, read=None),
         ) as response:
@@ -257,7 +258,7 @@ class RestV10Transport(Transport):
 
     async def set_push_config(self, task_id: str, config: dict[str, Any]) -> dict[str, Any]:
         response = await self._http.post(
-            self._url(f"/tasks/{task_id}/pushNotificationConfigs"),
+            self._url(f"/tasks/{quote(task_id, safe='')}/pushNotificationConfigs"),
             json=config,
             headers=self._headers(),
         )
@@ -265,16 +266,16 @@ class RestV10Transport(Transport):
         return response.json()  # type: ignore[no-any-return]
 
     async def get_push_config(self, task_id: str, config_id: str | None = None) -> dict[str, Any]:
-        path = f"/tasks/{task_id}/pushNotificationConfigs"
+        path = f"/tasks/{quote(task_id, safe='')}/pushNotificationConfigs"
         if config_id:
-            path = f"{path}/{config_id}"
+            path = f"{path}/{quote(config_id, safe='')}"
         response = await self._http.get(self._url(path), headers=self._headers())
         self._check_error(response, task_id=task_id)
         return response.json()  # type: ignore[no-any-return]
 
     async def list_push_configs(self, task_id: str) -> list[dict[str, Any]]:
         response = await self._http.get(
-            self._url(f"/tasks/{task_id}/pushNotificationConfigs"),
+            self._url(f"/tasks/{quote(task_id, safe='')}/pushNotificationConfigs"),
             headers=self._headers(),
         )
         self._check_error(response, task_id=task_id)
@@ -287,7 +288,9 @@ class RestV10Transport(Transport):
 
     async def delete_push_config(self, task_id: str, config_id: str) -> None:
         response = await self._http.delete(
-            self._url(f"/tasks/{task_id}/pushNotificationConfigs/{config_id}"),
+            self._url(
+                f"/tasks/{quote(task_id, safe='')}/pushNotificationConfigs/{quote(config_id, safe='')}"
+            ),
             headers=self._headers(),
         )
         self._check_error(response, task_id=task_id)
@@ -309,6 +312,34 @@ class RestV10Transport(Transport):
 # -- v1.0 SSE parser ----------------------------------------------------------
 
 
+def _decode_v10_sse_payload(payload: str, event_id: str | None) -> ClientStreamEvent | None:
+    """Decode one v1.0 SSE data payload into a StreamEvent (None if not a dict)."""
+    from a2akit.client.result import StreamEvent as ClientStreamEvent
+
+    try:
+        raw = json.loads(payload)
+    except json.JSONDecodeError as exc:
+        raise ProtocolError(f"Invalid JSON in SSE data: {exc}") from exc
+    if not isinstance(raw, dict):
+        return None
+    if "taskStatusUpdate" in raw:
+        v10_evt = TaskStatusUpdateEvent.model_validate(raw["taskStatusUpdate"])
+        return ClientStreamEvent.from_raw(convert_to_v03(v10_evt), event_id=event_id)
+    if "taskArtifactUpdate" in raw:
+        v10_art = TaskArtifactUpdateEvent.model_validate(raw["taskArtifactUpdate"])
+        return ClientStreamEvent.from_raw(convert_to_v03(v10_art), event_id=event_id)
+    # Bare Task / Message — distinguish by structure (Task has ``status``).
+    if "status" in raw and "id" in raw:
+        return ClientStreamEvent.from_raw(
+            convert_to_v03(Task.model_validate(raw)), event_id=event_id
+        )
+    if "role" in raw and "parts" in raw:
+        return ClientStreamEvent.from_raw(
+            convert_to_v03(Message.model_validate(raw)), event_id=event_id
+        )
+    raise ProtocolError(f"Unknown v1.0 SSE event shape: {list(raw)}")
+
+
 async def _parse_v10_sse(
     response: httpx.Response,
 ) -> AsyncIterator[ClientStreamEvent]:
@@ -320,9 +351,6 @@ async def _parse_v10_sse(
     - ``{"taskArtifactUpdate": {...}, "index": N}``
     Stream end = TCP close (no ``final`` flag).
     """
-    from a2akit.client.errors import ProtocolError
-    from a2akit.client.result import StreamEvent as ClientStreamEvent
-
     current_event_id: str | None = None
     data_lines: list[str] = []
 
@@ -335,40 +363,19 @@ async def _parse_v10_sse(
         elif not line and data_lines:
             payload = "\n".join(data_lines)
             data_lines = []
-            if not payload:
-                current_event_id = None
-                continue
-            try:
-                raw = json.loads(payload)
-            except json.JSONDecodeError as exc:
-                raise ProtocolError(f"Invalid JSON in SSE data: {exc}") from exc
-            if isinstance(raw, dict):
-                if "taskStatusUpdate" in raw:
-                    v10_evt = TaskStatusUpdateEvent.model_validate(raw["taskStatusUpdate"])
-                    yield ClientStreamEvent.from_raw(
-                        convert_to_v03(v10_evt), event_id=current_event_id
-                    )
-                    current_event_id = None
-                    continue
-                if "taskArtifactUpdate" in raw:
-                    v10_art = TaskArtifactUpdateEvent.model_validate(raw["taskArtifactUpdate"])
-                    yield ClientStreamEvent.from_raw(
-                        convert_to_v03(v10_art), event_id=current_event_id
-                    )
-                    current_event_id = None
-                    continue
-                # Bare Task / Message — distinguish by structure (Task has ``status``).
-                if "status" in raw and "id" in raw:
-                    yield ClientStreamEvent.from_raw(
-                        convert_to_v03(Task.model_validate(raw)), event_id=current_event_id
-                    )
-                elif "role" in raw and "parts" in raw:
-                    yield ClientStreamEvent.from_raw(
-                        convert_to_v03(Message.model_validate(raw)), event_id=current_event_id
-                    )
-                else:
-                    raise ProtocolError(f"Unknown v1.0 SSE event shape: {list(raw)}")
+            if payload:
+                event = _decode_v10_sse_payload(payload, current_event_id)
+                if event is not None:
+                    yield event
             current_event_id = None
+
+    # Flush remaining data (stream may end without a trailing blank line).
+    if data_lines:
+        payload = "\n".join(data_lines)
+        if payload:
+            event = _decode_v10_sse_payload(payload, current_event_id)
+            if event is not None:
+                yield event
 
 
 __all__ = ["RestV10Transport"]

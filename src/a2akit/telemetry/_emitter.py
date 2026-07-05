@@ -6,6 +6,8 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any
 
+from a2a_pydantic import v10
+
 from a2akit.event_emitter import EventEmitter
 from a2akit.telemetry._instruments import OTEL_ENABLED, get_meter_instance
 from a2akit.telemetry._semantic import (
@@ -28,6 +30,15 @@ TERMINAL_STATES: set[Any] = set()
 
 if OTEL_ENABLED:
     from a2akit.storage.base import TERMINAL_STATES
+
+# Production passes v1.0 TaskState values (e.g. "TASK_STATE_WORKING").
+_STATE_WORKING = v10.TaskState.task_state_working.value
+_STATE_FAILED = v10.TaskState.task_state_failed.value
+_TERMINAL_STATE_VALUES = {s.value if hasattr(s, "value") else str(s) for s in TERMINAL_STATES}
+
+# Cap for _task_timers so tasks that never reach a terminal state don't leak
+# memory in long-lived processes.
+_MAX_TASK_TIMERS = 10_000
 
 
 class TracingEmitter(EventEmitter):
@@ -127,12 +138,14 @@ class TracingEmitter(EventEmitter):
 
         state_val = state.value if hasattr(state, "value") else str(state)
 
-        if state_val == "working":
+        if state_val == _STATE_WORKING:
+            if task_id not in self._task_timers and len(self._task_timers) >= _MAX_TASK_TIMERS:
+                self._task_timers.pop(next(iter(self._task_timers)))
             self._task_timers[task_id] = time.monotonic()
             if self._active_counter:
                 self._active_counter.add(1)
 
-        elif state_val in {s.value if hasattr(s, "value") else str(s) for s in TERMINAL_STATES}:
+        elif state_val in _TERMINAL_STATE_VALUES:
             if self._active_counter:
                 self._active_counter.add(-1)
             if self._total_counter:
@@ -142,5 +155,5 @@ class TracingEmitter(EventEmitter):
             if start is not None and self._duration_hist:
                 self._duration_hist.record(time.monotonic() - start, {"state": state_val})
 
-            if state_val == "failed" and self._error_counter:
+            if state_val == _STATE_FAILED and self._error_counter:
                 self._error_counter.add(1)
