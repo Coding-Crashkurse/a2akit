@@ -34,6 +34,7 @@ if TYPE_CHECKING:
 
     from a2akit.broker import Broker, CancelRegistry
     from a2akit.event_bus.base import EventBus
+    from a2akit.push.store import PushConfigStore
     from a2akit.storage import Storage
 
 logger = logging.getLogger(__name__)
@@ -160,7 +161,7 @@ class TaskManager:
     default_blocking_timeout_s: float = 30.0
     cancel_force_timeout_s: float = 60.0
     emitter: EventEmitter | None = None
-    push_store: Any = None
+    push_store: PushConfigStore | None = None
     input_modes: list[str] = field(default_factory=list)
     _background_tasks: set[asyncio.Task[Any]] = field(default_factory=set, init=False, repr=False)
 
@@ -188,9 +189,23 @@ class TaskManager:
         try:
             await coro
         except Exception:
-            logger.error("Broker enqueue failed for task %s, marking as failed", task_id)
+            logger.exception("Broker enqueue failed for task %s, marking as failed", task_id)
             try:
+                # Guard against stomping a live task: the enqueue may have
+                # actually taken effect (error after the send) and a worker
+                # may already be processing it. Only mark failed if the task
+                # is still in `submitted`, and pin the write with the OCC
+                # version (captured BEFORE the load — TOCTOU-safe ordering,
+                # see _submit_task) so a concurrent transition rejects us.
+                version = await self.storage.get_version(task_id)
                 task = await self.storage.load_task(task_id)
+                if task is None or task.status.state != v10.TaskState.task_state_submitted:
+                    logger.info(
+                        "Skipping failed-mark for task %s after broker error: "
+                        "task is no longer in submitted state",
+                        task_id,
+                    )
+                    return
                 error_msg = v10.Message(
                     role=v10.Role.role_agent,
                     parts=[v10.Part(text="Failed to enqueue task")],
@@ -199,12 +214,22 @@ class TaskManager:
                     context_id=task.context_id if task else "",
                 )
                 emitter = self.emitter or DefaultEventEmitter(self.event_bus, self.storage)
-                await emitter.update_task(
-                    task_id,
-                    state=v10.TaskState.task_state_failed,
-                    status_message=error_msg,
-                    messages=[error_msg],
-                )
+                try:
+                    await emitter.update_task(
+                        task_id,
+                        state=v10.TaskState.task_state_failed,
+                        status_message=error_msg,
+                        messages=[error_msg],
+                        expected_version=version,
+                    )
+                except (ConcurrencyError, TaskTerminalStateError):
+                    # A worker (or another writer) advanced the task between
+                    # our check and the write — its result wins, do nothing.
+                    logger.info(
+                        "Skipping failed-mark for task %s: concurrent writer advanced the task",
+                        task_id,
+                    )
+                    return
                 task = await self.storage.load_task(task_id)
                 if task is not None:
                     await emitter.send_event(
@@ -541,6 +566,19 @@ class TaskManager:
         context_id = msg.context_id or str(uuid.uuid4())
         task, should_enqueue = await self._submit_task(context_id, msg)
 
+        # Persist the tenant onto the task's metadata — same as send_message,
+        # so streamed tasks are visible to ``list_tasks(tenant=...)`` too.
+        # getattr: legacy v0.3 MessageSendParams (no tenant field) can reach
+        # this method through the compat layer.
+        tenant = getattr(params, "tenant", None)
+        if is_new and should_enqueue and tenant:
+            from a2akit.storage.base import META_TENANT_KEY
+
+            await self.storage.update_task(
+                task.id,
+                task_metadata={META_TENANT_KEY: tenant},
+            )
+
         # Follow-up: use the task's real context_id, not the generated one
         if not is_new:
             context_id = task.context_id
@@ -564,9 +602,10 @@ class TaskManager:
         # the DB read and the subscription setup (same pattern as subscribe_task).
         async with self.event_bus.subscribe(task.id) as sub:
             # For retries/duplicates, re-load the snapshot inside the
-            # subscription context so it includes the latest state.
+            # subscription context so it includes the latest state,
+            # honoring history_length like the first-request path above.
             if not should_enqueue:
-                fresh = await self.storage.load_task(task.id)
+                fresh = await self.storage.load_task(task.id, history_length=history_len)
                 if fresh is not None:
                     task = fresh
 
@@ -714,24 +753,25 @@ class TaskManager:
                     task.context_id,
                     reason="Task was force-canceled after timeout.",
                 )
-                # Clean up resources that the worker would normally own.
-                # If the worker never dequeued this task, these would leak.
-                # Cleanup is idempotent — safe even if the worker also calls it.
-                # Each operation is isolated so a transient failure in one
-                # (e.g. Redis blip during event_bus.cleanup) does not skip
-                # the other — otherwise the CancelRegistry key + Pub/Sub
-                # listener would leak until the next process restart.
-                try:
-                    await self.event_bus.cleanup(task_id)
-                except Exception:
-                    logger.exception(
-                        "event_bus cleanup failed for %s during force-cancel", task_id
-                    )
-                try:
-                    await self.cancel_registry.cleanup(task_id)
-                except Exception:
-                    logger.exception(
-                        "cancel_registry cleanup failed for %s during force-cancel", task_id
-                    )
+            # Clean up resources that the worker would normally own.
+            # If the worker never dequeued this task, these would leak.
+            # Runs regardless of terminal state: a task that died before
+            # dequeue (e.g. failed by _enqueue_or_fail) is already terminal
+            # here, but its replay buffer and cancel key still exist.
+            # Cleanup is idempotent — safe even if the worker also calls it.
+            # Each operation is isolated so a transient failure in one
+            # (e.g. Redis blip during event_bus.cleanup) does not skip
+            # the other — otherwise the CancelRegistry key + Pub/Sub
+            # listener would leak until the next process restart.
+            try:
+                await self.event_bus.cleanup(task_id)
+            except Exception:
+                logger.exception("event_bus cleanup failed for %s during force-cancel", task_id)
+            try:
+                await self.cancel_registry.cleanup(task_id)
+            except Exception:
+                logger.exception(
+                    "cancel_registry cleanup failed for %s during force-cancel", task_id
+                )
         except Exception:
             logger.exception("Force-cancel failed for task %s", task_id)

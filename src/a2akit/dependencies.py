@@ -57,13 +57,19 @@ class DependencyContainer:
         """
         if self._started:
             return
+        # Dedup by identity — the same Dependency registered under two
+        # keys (e.g. a type key and a string alias) must start only once.
+        seen: set[int] = set()
         started: list[Dependency] = []
         try:
             for value in self._registry.values():
-                if isinstance(value, Dependency):
+                if isinstance(value, Dependency) and id(value) not in seen:
+                    seen.add(id(value))
                     await value.startup()
                     started.append(value)
         except BaseException:
+            # `started` contains each dependency at most once (dedup above),
+            # so the rollback cannot double-shutdown either.
             for dep in reversed(started):
                 try:
                     await dep.shutdown()
@@ -80,8 +86,12 @@ class DependencyContainer:
         """
         if not self._started:
             return
+        # Dedup by identity — mirror of startup(): one instance under two
+        # keys must shut down only once.
+        seen: set[int] = set()
         for value in reversed(list(self._registry.values())):
-            if isinstance(value, Dependency):
+            if isinstance(value, Dependency) and id(value) not in seen:
+                seen.add(id(value))
                 try:
                     await value.shutdown()
                 except Exception:
