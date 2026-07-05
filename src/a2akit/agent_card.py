@@ -12,12 +12,15 @@ protocol version (defaults to v1.0 per spec §6).
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Literal
 
 from a2a_pydantic import v03, v10
 from pydantic import BaseModel, Field
 
 from a2akit._protocol import ProtocolVersion
+
+logger = logging.getLogger(__name__)
 
 
 class ProviderConfig(BaseModel):
@@ -251,6 +254,33 @@ def _to_v10_extension(ext: ExtensionConfig) -> v10.AgentExtension:
     )
 
 
+def _to_v10_security_scheme(scheme: v03.SecurityScheme) -> v10.SecurityScheme | None:
+    """Translate a v0.3 SecurityScheme to its v1.0 shape.
+
+    Only the common schemes (apiKey, http) translate cleanly; OAuth2,
+    OpenID Connect and mTLS need the full v03→v10 converter and return
+    ``None`` for now.
+    """
+    inner = scheme.root
+    if isinstance(inner, v03.APIKeySecurityScheme):
+        return v10.SecurityScheme(
+            api_key_security_scheme=v10.APIKeySecurityScheme(
+                description=inner.description or "",
+                location=getattr(inner.in_, "value", str(inner.in_)),
+                name=inner.name,
+            )
+        )
+    if isinstance(inner, v03.HTTPAuthSecurityScheme):
+        return v10.SecurityScheme(
+            http_auth_security_scheme=v10.HTTPAuthSecurityScheme(
+                bearer_format=inner.bearer_format or "",
+                description=inner.description or "",
+                scheme=inner.scheme,
+            )
+        )
+    return None
+
+
 def build_agent_card_v10(
     config: AgentCardConfig,
     base_url: str,
@@ -306,16 +336,37 @@ def build_agent_card_v10(
                 )
             )
 
-    # Security schemes on v10 use a different envelope shape. Passing through
-    # the v03 SecurityScheme objects would lose fidelity; keep it out for
-    # now — full translation lands with section 21 when the library ships
-    # the full v03→v10 converter.
+    # Translate the common v0.3 security schemes (apiKey, http) to v1.0.
+    # Schemes without a clean translation (OAuth2, OIDC, mTLS) are dropped —
+    # together with any security requirement referencing them, so the card
+    # never advertises requirements pointing at undeclared schemes.
+    schemes_v10: dict[str, v10.SecurityScheme] = {}
+    dropped_schemes: list[str] = []
+    for scheme_name, scheme in (config.security_schemes or {}).items():
+        translated = _to_v10_security_scheme(scheme)
+        if translated is None:
+            dropped_schemes.append(scheme_name)
+        else:
+            schemes_v10[scheme_name] = translated
+
     security_requirements: list[v10.SecurityRequirement] = []
+    dropped_requirements = 0
     for entry in config.security or []:
+        if any(name not in schemes_v10 for name in entry):
+            dropped_requirements += 1
+            continue
         requirement_schemes: dict[str, v10.StringList] = {}
         for name, scopes in entry.items():
             requirement_schemes[name] = v10.StringList(strings=list(scopes))
         security_requirements.append(v10.SecurityRequirement(schemes=requirement_schemes))
+
+    if dropped_schemes or dropped_requirements:
+        logger.warning(
+            "v1.0 agent card: dropped security schemes %s and %d security "
+            "requirement(s) referencing untranslated/undeclared schemes",
+            dropped_schemes,
+            dropped_requirements,
+        )
 
     return v10.AgentCard(
         name=config.name,
@@ -343,7 +394,7 @@ def build_agent_card_v10(
         icon_url=config.icon_url or "",
         documentation_url=config.documentation_url or "",
         security_requirements=security_requirements,
-        security_schemes={},
+        security_schemes=schemes_v10,
         signatures=[
             v10.AgentCardSignature(
                 protected=s.protected,
@@ -378,11 +429,25 @@ def build_agent_card(
 
 
 def external_base_url(headers: dict[str, str], scheme: str, netloc: str) -> str:
-    """Derive the external base URL from request headers (proxy-aware)."""
-    resolved_scheme = (headers.get("x-forwarded-proto") or scheme).split(",")[0].strip()
-    resolved_host = (
-        (headers.get("x-forwarded-host") or headers.get("host") or netloc).split(",")[0].strip()
-    )
+    """Derive the external base URL from request headers.
+
+    ``X-Forwarded-Proto`` / ``X-Forwarded-Host`` are honored only when
+    ``Settings.trust_proxy_headers`` (env ``A2AKIT_TRUST_PROXY_HEADERS``)
+    is enabled — trusting them unconditionally would let any client spoof
+    the URLs advertised on the agent card.
+    """
+    from a2akit.config import get_settings
+
+    if get_settings().trust_proxy_headers:
+        resolved_scheme = (headers.get("x-forwarded-proto") or scheme).split(",")[0].strip()
+        resolved_host = (
+            (headers.get("x-forwarded-host") or headers.get("host") or netloc)
+            .split(",")[0]
+            .strip()
+        )
+    else:
+        resolved_scheme = scheme
+        resolved_host = (headers.get("host") or netloc).split(",")[0].strip()
     return f"{resolved_scheme}://{resolved_host}"
 
 

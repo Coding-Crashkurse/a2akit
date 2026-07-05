@@ -22,6 +22,10 @@ class Settings(BaseSettings):
     # Event replay buffer for SSE Last-Event-ID
     event_replay_buffer: int = 100
 
+    # Honor X-Forwarded-Proto/X-Forwarded-Host when deriving external URLs
+    # (agent card). Enable only behind a trusted reverse proxy.
+    trust_proxy_headers: bool = False
+
     # Redis
     redis_url: str = "redis://localhost:6379/0"
     redis_key_prefix: str = "a2akit:"

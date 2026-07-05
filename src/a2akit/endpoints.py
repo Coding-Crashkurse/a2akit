@@ -234,6 +234,10 @@ async def _enforce_middleware_pipeline(
             await mw.before_dispatch(envelope, request)
             started.append(mw)
         yield
+    except BaseException as exc:
+        # Surface the failure to error-aware middleware (TracingMiddleware).
+        envelope.context["_a2a_error"] = exc
+        raise
     finally:
         # Only call after_dispatch on middlewares whose before_dispatch
         # succeeded — otherwise a middleware that raised during setup
@@ -289,9 +293,11 @@ async def _stream_setup(
             await agen.aclose()
             agen = None
             raise
-    except BaseException:
-        # Run after_dispatch only for middlewares that successfully
+    except BaseException as exc:
+        # Surface the failure to error-aware middleware (TracingMiddleware),
+        # then run after_dispatch only for middlewares that successfully
         # completed before_dispatch, in reverse order.
+        envelope.context["_a2a_error"] = exc
         for mw in reversed(started):
             await mw.after_dispatch(envelope)
         raise
@@ -368,7 +374,9 @@ def build_a2a_router() -> APIRouter:
 
             assert envelope.params is not None  # message endpoints always carry params
             result_v10 = await tm.send_message(envelope.params, request_context=envelope.context)
-        except Exception:
+        except Exception as exc:
+            # Surface the failure to error-aware middleware (TracingMiddleware).
+            envelope.context["_a2a_error"] = exc
             for mw in reversed(started):
                 await mw.after_dispatch(envelope)
             raise
@@ -409,10 +417,12 @@ def build_a2a_router() -> APIRouter:
         first_pair, agen, _middlewares, _envelope = setup
         try:
             eid, first_event = first_pair
-            if not isinstance(first_event, DirectReply):
-                payload = _wrap_stream_event(first_event)
-                if payload is not None:
-                    yield ServerSentEvent(raw_data=payload, id=eid)
+            # Convention: a DirectReply arriving as the first event
+            # (reachable via Last-Event-ID replay) is emitted as a message
+            # event — uniform across all SSE endpoints.
+            payload = _wrap_stream_event(first_event)
+            if payload is not None:
+                yield ServerSentEvent(raw_data=payload, id=eid)
             async for eid, ev in agen:
                 if isinstance(ev, DirectReply):
                     continue
@@ -514,6 +524,9 @@ def build_a2a_router() -> APIRouter:
         first_pair, agen = setup
         try:
             eid, first_event = first_pair
+            # Convention: a DirectReply arriving as the first event
+            # (reachable via Last-Event-ID replay) is emitted as a message
+            # event — uniform across all SSE endpoints.
             payload = _wrap_stream_event(first_event)
             if payload is not None:
                 yield ServerSentEvent(raw_data=payload, id=eid)

@@ -70,6 +70,11 @@ class ContentTypeValidationMiddleware(BaseHTTPMiddleware):
     )
     _EXEMPT_METHODS: frozenset[str] = frozenset({"GET", "DELETE", "OPTIONS", "HEAD"})
 
+    def __init__(self, app: Any, *, serves_v10: bool = False) -> None:
+        super().__init__(app)
+        # Pick the error body shape matching the server's A2A wire version.
+        self._serves_v10 = serves_v10
+
     async def dispatch(self, request: Request, call_next: Any) -> Response:
         has_body = (
             int(request.headers.get("content-length", "0")) > 0
@@ -83,17 +88,21 @@ class ContentTypeValidationMiddleware(BaseHTTPMiddleware):
         ):
             content_type = request.headers.get("content-type", "")
             if content_type.split(";")[0].strip().lower() != "application/json":
+                message = f"Unsupported Content-Type: {content_type}. Expected application/json."
+                if self._serves_v10:
+                    from a2akit._errors_v10 import build_error
+
+                    return build_error(
+                        http_status=415,
+                        grpc_status="INVALID_ARGUMENT",
+                        message=message,
+                        reason="CONTENT_TYPE_NOT_SUPPORTED",
+                    )
                 return JSONResponse(
                     status_code=415,
                     content={
                         "jsonrpc": "2.0",
-                        "error": {
-                            "code": -32600,
-                            "message": (
-                                f"Unsupported Content-Type: {content_type}. "
-                                f"Expected application/json."
-                            ),
-                        },
+                        "error": {"code": -32600, "message": message},
                         "id": None,
                     },
                 )
@@ -121,8 +130,8 @@ class A2AServer:
         settings: Settings | None = None,
         dependencies: dict[Any, Any] | None = None,
         enable_telemetry: bool | None = None,
-        # A2A protocol wire version ("1.0" default, "0.3" for legacy, or a
-        # set like {"1.0", "0.3"} to serve both on one server).
+        # A2A protocol wire version ("1.0" default, "0.3" for legacy).
+        # Exactly one version per server — sets/lists are rejected.
         protocol_version: ProtocolVersionInput = None,
         # Multi-transport (Spec §3.4, §5.5) — transport bindings like JSON-RPC
         # or HTTP+JSON, NOT A2A wire versions.
@@ -190,7 +199,10 @@ class A2AServer:
         self._push_blocked_hosts = push_blocked_hosts
         self._extended_card_provider = extended_card_provider
         if extended_card_provider is not None:
-            self._card_config.supports_authenticated_extended_card = True
+            # Copy instead of mutating the caller's AgentCardConfig object.
+            self._card_config = self._card_config.model_copy(
+                update={"supports_authenticated_extended_card": True}
+            )
 
     @property
     def protocol_version(self) -> ProtocolVersion:
@@ -430,11 +442,12 @@ class A2AServer:
 
         app = FastAPI(lifespan=lifespan, **fastapi_kwargs)
 
+        serves_v10 = self._protocol_version == ProtocolVersion.V1_0
+
         # Content-Type validation (Spec §3.2 MUST)
-        app.add_middleware(ContentTypeValidationMiddleware)
+        app.add_middleware(ContentTypeValidationMiddleware, serves_v10=serves_v10)
 
         # REQ-09: A2A-Version response header on all responses.
-        serves_v10 = self._protocol_version == ProtocolVersion.V1_0
         version_header = "1.0" if serves_v10 else "0.3.0"
 
         @app.middleware("http")

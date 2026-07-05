@@ -63,26 +63,39 @@ def _result_response(req_id: Any, result: Any) -> JSONResponse:
     return JSONResponse(content={"jsonrpc": "2.0", "id": req_id, "result": result})
 
 
-def _serialize(obj: Any) -> Any:
+def _serialize(obj: Any) -> dict[str, Any] | None:
     """Serialize a pydantic model to a JSON-compatible dict.
 
     Accepts both v10 (internal) and v03 (wire) models. v10 objects are
     converted to v03 first, then Task-shaped payloads are sanitized to
-    strip framework-internal metadata keys.
+    strip framework-internal metadata keys. Returns ``None`` when the
+    object has no v0.3 wire representation — callers skip such events
+    instead of shipping the wrong schema.
     """
     # Unwrap internal wrappers first so downstream logic sees concrete models.
+    final = False
     if isinstance(obj, TerminalMarker):
         obj = obj.event
+        final = True
     if isinstance(obj, DirectReply):
         obj = obj.message
-    # Anything v10 → v03 for the wire. Already v03 / unsupported objects pass through.
-    import contextlib
-
-    with contextlib.suppress(Exception):
-        obj = convert_to_v03(obj)
+    # Anything v10 → v03 for the wire. Already-v03 objects pass through.
+    if not type(obj).__module__.startswith("a2a_pydantic.v03"):
+        try:
+            obj = convert_to_v03(obj)
+        except Exception:
+            logger.exception(
+                "Cannot convert %s to the v0.3 wire shape; dropping payload",
+                type(obj).__name__,
+            )
+            return None
+    if final and isinstance(obj, v03.TaskStatusUpdateEvent):
+        # v0.3 marks the closing status event with ``final: true`` so
+        # clients know the stream is done (mirrors the REST path).
+        obj = obj.model_copy(update={"final": True})
     if isinstance(obj, v03.Task):
         obj = _sanitize_task_for_client(obj)
-    return obj.model_dump(mode="json", by_alias=True, exclude_none=True)
+    return obj.model_dump(mode="json", by_alias=True, exclude_none=True)  # type: ignore[no-any-return]
 
 
 def _map_exception_to_error(req_id: Any, exc: Exception) -> JSONResponse:
@@ -125,7 +138,10 @@ def _map_exception_to_error(req_id: Any, exc: Exception) -> JSONResponse:
         return _error_response(req_id, INVALID_REQUEST, f"{exc.scheme} authentication required")
     if isinstance(exc, PushConfigNotFoundError):
         return _error_response(req_id, TASK_NOT_FOUND, str(exc))
-    return _error_response(req_id, INTERNAL_ERROR, str(exc))
+    # Uncataloged exception: never echo str(exc) to the client — it may
+    # leak internals. Log the detail server-side instead.
+    logger.error("Unhandled exception in JSON-RPC handler", exc_info=exc)
+    return _error_response(req_id, INTERNAL_ERROR, "Internal error")
 
 
 def _get_tm(request: Request) -> TaskManager:
@@ -222,7 +238,14 @@ def build_jsonrpc_router() -> APIRouter:
 
         req_id, is_notification, body = parsed
         method = body["method"]
-        params = body.get("params") or {}
+        params = body.get("params")
+        if params is None:
+            params = {}
+        elif not isinstance(params, dict):
+            # A2A methods take named params only — arrays/scalars are invalid.
+            if is_notification:
+                return Response(status_code=204)
+            return _error_response(req_id, INVALID_PARAMS, "Invalid params: must be an object")
 
         handler = _JSONRPC_DISPATCH.get(method)
         if handler is None:
@@ -257,6 +280,9 @@ def build_jsonrpc_router() -> APIRouter:
                             await mw.before_dispatch(envelope, request)
                             started.append(mw)
                     except Exception as exc:
+                        # Surface the failure to error-aware middleware
+                        # (TracingMiddleware) before after_dispatch runs.
+                        envelope.context["_a2a_error"] = exc
                         if is_notification:
                             return Response(status_code=204)
                         return _map_exception_to_error(req_id, exc)
@@ -308,7 +334,9 @@ async def _handle_message_send(
 
             assert envelope.params is not None  # message endpoints always carry params
             result_v10 = await tm.send_message(envelope.params, request_context=envelope.context)
-        except Exception:
+        except Exception as inner_exc:
+            # Surface the failure to error-aware middleware (TracingMiddleware).
+            envelope.context["_a2a_error"] = inner_exc
             for mw in reversed(started):
                 await mw.after_dispatch(envelope)
             raise
@@ -369,8 +397,10 @@ async def _handle_message_send_stream(
             except BaseException:
                 await agen.aclose()
                 raise
-        except BaseException:
-            # Only roll back middlewares whose before_dispatch completed.
+        except BaseException as inner_exc:
+            # Surface the failure to error-aware middleware (TracingMiddleware),
+            # then only roll back middlewares whose before_dispatch completed.
+            envelope.context["_a2a_error"] = inner_exc
             for mw in reversed(started):
                 await mw.after_dispatch(envelope)
             raise
@@ -380,14 +410,20 @@ async def _handle_message_send_stream(
     async def _sse_generator() -> AsyncIterator[str]:
         try:
             first_eid, first_event = first_pair
-            if not isinstance(first_event, DirectReply):
-                payload = {"jsonrpc": "2.0", "id": req_id, "result": _serialize(first_event)}
+            # Convention: a DirectReply arriving as the first event
+            # (reachable via Last-Event-ID replay) is emitted as a message
+            # event — uniform across all SSE endpoints.
+            result = _serialize(first_event)
+            if result is not None:
+                payload = {"jsonrpc": "2.0", "id": req_id, "result": result}
                 yield f"id: {first_eid or ''}\ndata: {json.dumps(payload)}\n\n"
             async for event_id, event in agen:
                 if isinstance(event, DirectReply):
                     continue
-                payload = {"jsonrpc": "2.0", "id": req_id, "result": _serialize(event)}
-                yield f"id: {event_id or ''}\ndata: {json.dumps(payload)}\n\n"
+                result = _serialize(event)
+                if result is not None:
+                    payload = {"jsonrpc": "2.0", "id": req_id, "result": result}
+                    yield f"id: {event_id or ''}\ndata: {json.dumps(payload)}\n\n"
                 if isinstance(event, TerminalMarker):
                     break
         except Exception:
@@ -519,8 +555,10 @@ async def _handle_tasks_resubscribe(request: Request, req_id: Any, params: dict[
             except BaseException:
                 await agen.aclose()
                 raise
-        except BaseException:
-            # Only roll back middlewares whose before_dispatch completed.
+        except BaseException as inner_exc:
+            # Surface the failure to error-aware middleware (TracingMiddleware),
+            # then only roll back middlewares whose before_dispatch completed.
+            envelope.context["_a2a_error"] = inner_exc
             for mw in reversed(started):
                 await mw.after_dispatch(envelope)
             raise
@@ -530,14 +568,20 @@ async def _handle_tasks_resubscribe(request: Request, req_id: Any, params: dict[
     async def _sse_generator() -> AsyncIterator[str]:
         try:
             first_eid, first_event = first_pair
-            if not isinstance(first_event, DirectReply):
-                payload = {"jsonrpc": "2.0", "id": req_id, "result": _serialize(first_event)}
+            # Convention: a DirectReply arriving as the first event
+            # (reachable via Last-Event-ID replay) is emitted as a message
+            # event — uniform across all SSE endpoints.
+            result = _serialize(first_event)
+            if result is not None:
+                payload = {"jsonrpc": "2.0", "id": req_id, "result": result}
                 yield f"id: {first_eid or ''}\ndata: {json.dumps(payload)}\n\n"
             async for event_id, event in agen:
                 if isinstance(event, DirectReply):
                     continue
-                payload = {"jsonrpc": "2.0", "id": req_id, "result": _serialize(event)}
-                yield f"id: {event_id or ''}\ndata: {json.dumps(payload)}\n\n"
+                result = _serialize(event)
+                if result is not None:
+                    payload = {"jsonrpc": "2.0", "id": req_id, "result": result}
+                    yield f"id: {event_id or ''}\ndata: {json.dumps(payload)}\n\n"
         except Exception:
             logger.exception("JSON-RPC SSE resubscribe stream aborted")
         finally:
@@ -701,7 +745,8 @@ async def _handle_get_extended_card(
             card.model_dump(mode="json", by_alias=True, exclude_none=True),
         )
     except Exception as exc:
-        return _error_response(req_id, INTERNAL_ERROR, str(exc))
+        logger.error("Failed to build the authenticated extended card", exc_info=exc)
+        return _error_response(req_id, INTERNAL_ERROR, "Internal error")
 
 
 _JSONRPC_DISPATCH.update(

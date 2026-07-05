@@ -20,13 +20,14 @@ Differences from the v0.3 router (``endpoints.py``):
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import TYPE_CHECKING, Any
 
 from a2a_pydantic import v10
 from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Path, Query, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from fastapi.sse import EventSourceResponse, ServerSentEvent
 
 from a2akit._errors_v10 import (
@@ -34,6 +35,7 @@ from a2akit._errors_v10 import (
     build_error,
     build_error_from_exception,
 )
+from a2akit._stream_v10 import sanitize_task_v10, wrap_stream_event_v10
 from a2akit.agent_card import AgentCardConfig, build_agent_card_v10, external_base_url
 from a2akit.middleware import A2AMiddleware, RequestEnvelope
 from a2akit.schema import DirectReply, TerminalMarker
@@ -52,68 +54,20 @@ SUPPORTED_A2A_VERSION = "1.0"
 logger = logging.getLogger(__name__)
 
 
-def _sanitize_task_for_client_v10(task: v10.Task) -> v10.Task:
-    """Strip framework-internal metadata keys before sending a v10 Task on the wire."""
-    md = task.metadata
-    if not md:
-        return task
-    cleaned = {k: v for k, v in md.items() if not k.startswith("_")}
-    if len(cleaned) == len(md):
-        return task
-    return task.model_copy(update={"metadata": cleaned or None})
+def _sse_data_v10(event: StreamEvent, task_cache: dict[str, v10.Task]) -> str | None:
+    """Serialize a v10 stream event for REST SSE.
 
-
-def _wrap_stream_event_v10(event: StreamEvent, task_cache: dict[str, v10.Task]) -> str | None:
-    """Serialize a v10 stream event for SSE with the wrapped-discriminator form.
-
-    - ``v10.Task`` → bare JSON snapshot (sanitized).
-    - ``v10.Message`` → bare JSON.
-    - ``v10.TaskStatusUpdateEvent`` → ``{"taskStatusUpdate": {...}}``.
-    - ``v10.TaskArtifactUpdateEvent`` → ``{"taskArtifactUpdate": {...},
-      "index": N}`` where ``N`` is the artifact's position in the owning
-      task's ``artifacts`` array (0-based). We track this via ``task_cache``
-      keyed by ``task_id`` so repeated updates to the same artifact keep a
-      stable index.
-    - ``TerminalMarker`` → unwrap to the inner status event and let the
-      caller close the stream after this yield.
-    - ``DirectReply`` → bare Message JSON (the inner message).
+    Payloads come from the shared :func:`wrap_stream_event_v10`; the REST
+    wire emits ``Task`` / ``Message`` (and ``DirectReply``) snapshots bare
+    while status/artifact updates keep the wrapped-discriminator form.
     """
-    import json as _json
-
-    if isinstance(event, DirectReply):
-        return str(event.message.model_dump_json(by_alias=True, exclude_none=True))
-    if isinstance(event, TerminalMarker):
-        term_payload: dict[str, Any] = {
-            "taskStatusUpdate": event.event.model_dump(
-                mode="json", by_alias=True, exclude_none=True
-            )
-        }
-        return _json.dumps(term_payload)
-    if isinstance(event, v10.Task):
-        sanitized = _sanitize_task_for_client_v10(event)
-        task_cache[sanitized.id] = sanitized
-        return str(sanitized.model_dump_json(by_alias=True, exclude_none=True))
-    if isinstance(event, v10.Message):
-        return str(event.model_dump_json(by_alias=True, exclude_none=True))
-    if isinstance(event, v10.TaskStatusUpdateEvent):
-        return _json.dumps(
-            {"taskStatusUpdate": event.model_dump(mode="json", by_alias=True, exclude_none=True)}
-        )
-    if isinstance(event, v10.TaskArtifactUpdateEvent):
-        idx: int | None = None
-        cached = task_cache.get(event.task_id)
-        if cached and cached.artifacts:
-            for i, a in enumerate(cached.artifacts):
-                if a.artifact_id == event.artifact.artifact_id:
-                    idx = i
-                    break
-        art_payload: dict[str, Any] = {
-            "taskArtifactUpdate": event.model_dump(mode="json", by_alias=True, exclude_none=True)
-        }
-        if idx is not None:
-            art_payload["index"] = idx
-        return _json.dumps(art_payload)
-    return None
+    payload = wrap_stream_event_v10(event, task_cache)
+    if payload is None:
+        return None
+    if len(payload) == 1 and ("task" in payload or "message" in payload):
+        (inner,) = payload.values()
+        return json.dumps(inner)
+    return json.dumps(payload)
 
 
 def _check_a2a_version_v10(
@@ -247,6 +201,10 @@ async def _enforce_middleware_pipeline(
             await mw.before_dispatch(envelope, request)
             started.append(mw)
         yield
+    except BaseException as exc:
+        # Surface the failure to error-aware middleware (TracingMiddleware).
+        envelope.context["_a2a_error"] = exc
+        raise
     finally:
         for mw in reversed(started):
             await mw.after_dispatch(envelope)
@@ -296,7 +254,9 @@ async def _stream_setup_v10(
             await agen.aclose()
             agen = None
             raise
-    except BaseException:
+    except BaseException as exc:
+        # Surface the failure to error-aware middleware (TracingMiddleware).
+        envelope.context["_a2a_error"] = exc
         for mw in reversed(started):
             await mw.after_dispatch(envelope)
         raise
@@ -367,7 +327,9 @@ def build_a2a_router_v10() -> APIRouter:
                 started.append(mw)
             assert envelope.params is not None
             result = await tm.send_message(envelope.params, request_context=envelope.context)
-        except Exception:
+        except Exception as exc:
+            # Surface the failure to error-aware middleware (TracingMiddleware).
+            envelope.context["_a2a_error"] = exc
             for mw in reversed(started):
                 await mw.after_dispatch(envelope)
             raise
@@ -378,7 +340,7 @@ def build_a2a_router_v10() -> APIRouter:
         # v1.0 wraps the result in SendMessageResponse (task oneof or message oneof).
         response: dict[str, Any]
         if isinstance(result, v10.Task):
-            sanitized = _sanitize_task_for_client_v10(result)
+            sanitized = sanitize_task_v10(result)
             response = {
                 "task": sanitized.model_dump(mode="json", by_alias=True, exclude_none=True)
             }
@@ -402,14 +364,16 @@ def build_a2a_router_v10() -> APIRouter:
         task_cache: dict[str, v10.Task] = {}
         try:
             eid, first_event = first_pair
-            if not isinstance(first_event, DirectReply):
-                payload = _wrap_stream_event_v10(first_event, task_cache)
-                if payload is not None:
-                    yield ServerSentEvent(raw_data=payload, id=eid)
+            # Convention: a DirectReply arriving as the first event
+            # (reachable via Last-Event-ID replay) is emitted as a message
+            # event — uniform across all SSE endpoints.
+            payload = _sse_data_v10(first_event, task_cache)
+            if payload is not None:
+                yield ServerSentEvent(raw_data=payload, id=eid)
             async for eid, ev in agen:
                 if isinstance(ev, DirectReply):
                     continue
-                payload = _wrap_stream_event_v10(ev, task_cache)
+                payload = _sse_data_v10(ev, task_cache)
                 if payload is not None:
                     yield ServerSentEvent(raw_data=payload, id=eid)
                 if isinstance(ev, TerminalMarker):
@@ -435,7 +399,7 @@ def build_a2a_router_v10() -> APIRouter:
                 reason="TASK_NOT_FOUND",
                 metadata={"taskId": task_id},
             )
-        t = _sanitize_task_for_client_v10(t)
+        t = sanitize_task_v10(t)
         return JSONResponse(content=t.model_dump(mode="json", by_alias=True, exclude_none=True))
 
     @router.get("/tasks", tags=["Tasks"])
@@ -474,7 +438,7 @@ def build_a2a_router_v10() -> APIRouter:
             include_artifacts=include_artifacts,
         )
         result = await tm.list_tasks(query)
-        result.tasks = [_sanitize_task_for_client_v10(t) for t in result.tasks]
+        result.tasks = [sanitize_task_v10(t) for t in result.tasks]
         return JSONResponse(
             content=result.model_dump(mode="json", by_alias=True, exclude_none=True)
         )
@@ -483,7 +447,7 @@ def build_a2a_router_v10() -> APIRouter:
     async def tasks_cancel(request: Request, task_id: str = Path()) -> JSONResponse:
         tm = _get_tm(request)
         result = await tm.cancel_task(task_id)
-        result = _sanitize_task_for_client_v10(result)
+        result = sanitize_task_v10(result)
         return JSONResponse(
             content=result.model_dump(mode="json", by_alias=True, exclude_none=True)
         )
@@ -503,13 +467,16 @@ def build_a2a_router_v10() -> APIRouter:
         task_cache: dict[str, v10.Task] = {}
         try:
             eid, first_event = first_pair
-            payload = _wrap_stream_event_v10(first_event, task_cache)
+            # Convention: a DirectReply arriving as the first event
+            # (reachable via Last-Event-ID replay) is emitted as a message
+            # event — uniform across all SSE endpoints.
+            payload = _sse_data_v10(first_event, task_cache)
             if payload is not None:
                 yield ServerSentEvent(raw_data=payload, id=eid)
             async for eid, ev in agen:
                 if isinstance(ev, DirectReply):
                     continue
-                payload = _wrap_stream_event_v10(ev, task_cache)
+                payload = _sse_data_v10(ev, task_cache)
                 if payload is not None:
                     yield ServerSentEvent(raw_data=payload, id=eid)
                 if isinstance(ev, TerminalMarker):
@@ -525,20 +492,11 @@ def build_a2a_router_v10() -> APIRouter:
         push_store = _get_push_store(request)
         storage = _get_storage(request)
         body = await request.json()
-        # v1.0 body is a flat v10.TaskPushNotificationConfig. We adapt to the
-        # v0.3-shaped PushConfigStore by building the wrapped form it expects.
+        # v1.0 body is a flat TaskPushNotificationConfig; the shared handler
+        # validates the flat webhook fields (id/url/token/authentication).
         from a2akit.push.endpoints import _serialize_tpnc, handle_set_config
 
-        # Wrap v10 flat → v0.3-style inner/outer for the existing handler.
-        wrapped = {
-            "pushNotificationConfig": {
-                "id": body.get("id"),
-                "url": body.get("url"),
-                "token": body.get("token"),
-                "authentication": body.get("authentication"),
-            },
-        }
-        result = await handle_set_config(push_store, storage, task_id, wrapped)
+        result = await handle_set_config(push_store, storage, task_id, body)
         return JSONResponse(content=_serialize_tpnc(result))
 
     @router.get(
@@ -573,14 +531,15 @@ def build_a2a_router_v10() -> APIRouter:
     )
     async def push_config_delete(
         request: Request, task_id: str = Path(), config_id: str = Path()
-    ) -> JSONResponse:
+    ) -> Response:
         _check_push_supported(request)
         push_store = _get_push_store(request)
         storage = _get_storage(request)
         from a2akit.push.endpoints import handle_delete_config
 
         await handle_delete_config(push_store, storage, task_id, config_id)
-        return JSONResponse(content=None, status_code=204)
+        # 204 responses MUST NOT carry a body — JSONResponse would emit "null".
+        return Response(status_code=204)
 
     # -- Discovery + health ---------------------------------------------------
 
@@ -610,6 +569,7 @@ def build_a2a_router_v10() -> APIRouter:
 
     @router.get("/health/ready", tags=["Health"])
     async def readiness_check(request: Request) -> JSONResponse:
+        """Deep readiness check — pings all backend components."""
         components: dict[str, Any] = {}
         for name in ("storage", "broker", "event_bus"):
             backend = getattr(request.app.state, name, None)
@@ -618,14 +578,17 @@ def build_a2a_router_v10() -> APIRouter:
                 continue
             try:
                 check = getattr(backend, "health_check", None)
-                if check is not None:
-                    components[name] = await check()
-                else:
-                    components[name] = {"status": "ok"}
+                result = await check() if check is not None else {"status": "ok"}
             except Exception as exc:
-                components[name] = {"status": "error", "error": str(exc)}
-        overall = "ok" if all(c.get("status") == "ok" for c in components.values()) else "degraded"
-        return JSONResponse(content={"status": overall, "components": components})
+                result = {"status": "error", "error": str(exc)}
+            result["type"] = type(backend).__name__
+            components[name] = result
+
+        all_ok = all(c.get("status") == "ok" for c in components.values())
+        return JSONResponse(
+            content={"status": "ok" if all_ok else "degraded", "components": components},
+            status_code=200 if all_ok else 503,
+        )
 
     return router
 
