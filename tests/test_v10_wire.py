@@ -489,6 +489,149 @@ async def test_v10_unsupported_content_type_uses_rpc_status_shape(
     assert err["details"][0]["reason"] == "CONTENT_TYPE_NOT_SUPPORTED"
 
 
+# -- JSON-RPC notifications ----------------------------------------------------
+
+
+class TestV10JsonRpcNotifications:
+    """Spec JSON-RPC 2.0 §4.1: server MUST NOT reply to a Notification.
+
+    Mirrors the v0.3 suite — a request is a Notification when the ``id``
+    member is OMITTED; an explicit ``"id": null`` is a regular request.
+    """
+
+    async def test_notification_send_message_returns_204(
+        self, jsonrpc_client: httpx.AsyncClient
+    ) -> None:
+        body = {
+            "jsonrpc": "2.0",
+            "method": "SendMessage",
+            "params": {
+                "message": {
+                    "role": "ROLE_USER",
+                    "parts": [{"text": "fire and forget"}],
+                    "messageId": "notif-1",
+                },
+            },
+        }
+        assert "id" not in body
+        resp = await jsonrpc_client.post("/", json=body)
+        assert resp.status_code == 204
+        assert resp.content == b""
+
+    async def test_notification_get_task_returns_204(
+        self, jsonrpc_client: httpx.AsyncClient
+    ) -> None:
+        body = {"jsonrpc": "2.0", "method": "GetTask", "params": {"id": "does-not-exist"}}
+        resp = await jsonrpc_client.post("/", json=body)
+        assert resp.status_code == 204
+        assert resp.content == b""
+
+    async def test_notification_unknown_method_returns_204(
+        self, jsonrpc_client: httpx.AsyncClient
+    ) -> None:
+        body = {"jsonrpc": "2.0", "method": "NoSuchMethod", "params": {}}
+        resp = await jsonrpc_client.post("/", json=body)
+        assert resp.status_code == 204
+        assert resp.content == b""
+
+    async def test_notification_streaming_method_returns_204(
+        self, jsonrpc_client: httpx.AsyncClient
+    ) -> None:
+        """A streaming method as a notification is answered with 204, not SSE."""
+        body = {
+            "jsonrpc": "2.0",
+            "method": "SendStreamingMessage",
+            "params": {
+                "message": {
+                    "role": "ROLE_USER",
+                    "parts": [{"text": "hi"}],
+                    "messageId": "notif-2",
+                },
+            },
+        }
+        resp = await jsonrpc_client.post("/", json=body)
+        assert resp.status_code == 204
+        assert resp.content == b""
+
+    async def test_explicit_null_id_is_not_notification(
+        self, jsonrpc_client: httpx.AsyncClient
+    ) -> None:
+        body = {
+            "jsonrpc": "2.0",
+            "id": None,
+            "method": "GetTask",
+            "params": {"id": "missing-task"},
+        }
+        resp = await jsonrpc_client.post("/", json=body)
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["id"] is None
+        assert data["error"]["code"] == -32001
+
+
+# -- Authenticated extended card -----------------------------------------------
+
+
+async def _extended_provider(request: Any) -> AgentCardConfig:
+    return AgentCardConfig(
+        name="Extended Agent",
+        description="Extended description",
+        version="2.0.0",
+        protocol="http+json",
+    )
+
+
+def _make_extended_app(protocol: str) -> Any:
+    server = A2AServer(
+        worker=_Echo(),
+        agent_card=AgentCardConfig(
+            name="Test",
+            description="Test server",
+            version="1.0.0",
+            protocol=protocol,  # type: ignore[arg-type]
+        ),
+        protocol_version="1.0",
+        extended_card_provider=_extended_provider,
+    )
+    return server.as_fastapi_app()
+
+
+async def test_v10_rest_extended_card(rest_client: httpx.AsyncClient) -> None:
+    """GET /card serves the extended card when a provider is configured,
+    and a google.rpc.Status 404 when it is not."""
+    # The plain rest_client fixture has no provider → NOT_FOUND shape.
+    r = await rest_client.get("/card")
+    assert r.status_code == 404
+    err = r.json()["error"]
+    assert err["status"] == "NOT_FOUND"
+    assert err["details"][0]["reason"] == "EXTENDED_CARD_NOT_CONFIGURED"
+
+    app = _make_extended_app("http+json")
+    async with LifespanManager(app):
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            r = await client.get("/card")
+            assert r.status_code == 200
+            assert r.json()["name"] == "Extended Agent"
+
+
+async def test_v10_jsonrpc_extended_card(jsonrpc_client: httpx.AsyncClient) -> None:
+    """GetExtendedAgentCard returns the card, or -32007 without a provider."""
+    r = await jsonrpc_client.post("/", json=_jrpc("GetExtendedAgentCard", {}))
+    body = r.json()
+    assert body["error"]["code"] == -32007
+    assert body["error"]["data"][0]["reason"] == "EXTENDED_CARD_NOT_CONFIGURED"
+
+    app = _make_extended_app("jsonrpc")
+    async with LifespanManager(app):
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            r = await client.post("/", json=_jrpc("GetExtendedAgentCard", {}))
+            body = r.json()
+            assert "error" not in body, body
+            assert body["result"]["name"] == "Extended Agent"
+
+
 def test_descriptor_for_walks_mro() -> None:
     """Subclasses of cataloged exceptions map to their base's descriptor."""
     from a2akit._errors_v10 import descriptor_for

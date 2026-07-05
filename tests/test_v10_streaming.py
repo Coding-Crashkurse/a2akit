@@ -5,7 +5,8 @@ Covers the previously untested v1.0 streaming surface:
 - JSON-RPC ``SendStreamingMessage`` happy path (events until terminal).
 - REST ``POST /message:stream`` happy path + stream close on terminal.
 - REST ``POST /tasks/{id}:subscribe`` with ``Last-Event-ID`` reconnect.
-- JSON-RPC ``CancelTask``.
+- JSON-RPC ``SubscribeToTask`` with ``Last-Event-ID`` reconnect.
+- JSON-RPC ``CancelTask`` + REST ``POST /tasks/{id}:cancel``.
 
 Every streaming read is wrapped in ``asyncio.timeout`` so a regression
 that stops the terminal event from closing the stream fails fast instead
@@ -223,6 +224,86 @@ async def test_v10_jsonrpc_subscribe_terminal_task_rejected(
     body = r.json()
     assert body["error"]["code"] == -32004
     assert body["error"]["data"][0]["reason"] == "UNSUPPORTED_OPERATION"
+
+
+async def test_v10_jsonrpc_subscribe_with_last_event_id_replays_to_terminal(
+    jsonrpc_stream_client: httpx.AsyncClient,
+) -> None:
+    """SubscribeToTask with Last-Event-ID streams JSON-RPC-enveloped events
+    for a terminal task and closes instead of hanging."""
+    r = await jsonrpc_stream_client.post(
+        "/",
+        json={
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "SendMessage",
+            "params": {
+                "message": _message("one two", "v10-jrpc-sub2"),
+                "configuration": {"blocking": True},
+            },
+        },
+    )
+    task_id = r.json()["result"]["task"]["id"]
+
+    raw = ""
+    async with asyncio.timeout(STREAM_TIMEOUT):
+        async with jsonrpc_stream_client.stream(
+            "POST",
+            "/",
+            json={
+                "jsonrpc": "2.0",
+                "id": 7,
+                "method": "SubscribeToTask",
+                "params": {"id": task_id},
+            },
+            headers={"Last-Event-ID": "0"},
+        ) as resp:
+            assert resp.status_code == 200
+            async for chunk in resp.aiter_text():
+                raw += chunk
+
+    events = _parse_sse(raw)
+    assert events, raw
+    assert all(e.get("jsonrpc") == "2.0" and e.get("id") == 7 for e in events), events
+    results = [e["result"] for e in events]
+    # Final event: wrapped snapshot of the terminal task.
+    assert "task" in results[-1], results
+    assert results[-1]["task"]["id"] == task_id
+    assert results[-1]["task"]["status"]["state"] == "TASK_STATE_COMPLETED"
+
+
+@pytest.fixture
+async def rest_input_client() -> AsyncIterator[httpx.AsyncClient]:
+    app = _make_app(InputRequiredWorker(), "http+json")
+    async with LifespanManager(app):
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            yield client
+
+
+async def test_v10_rest_cancel_task(rest_input_client: httpx.AsyncClient) -> None:
+    """POST /tasks/{id}:cancel on a non-terminal task succeeds."""
+    r = await rest_input_client.post(
+        "/message:send",
+        json={
+            "message": _message("hi", "v10-rest-cancel-1"),
+            "configuration": {"blocking": True},
+        },
+    )
+    task = r.json()["task"]
+    assert task["status"]["state"] == "TASK_STATE_INPUT_REQUIRED"
+
+    r = await rest_input_client.post(f"/tasks/{task['id']}:cancel")
+    assert r.status_code == 200
+    assert r.json()["id"] == task["id"]
+
+
+async def test_v10_rest_cancel_task_not_found(rest_input_client: httpx.AsyncClient) -> None:
+    r = await rest_input_client.post("/tasks/nope:cancel")
+    assert r.status_code == 404
+    err = r.json()["error"]
+    assert err["status"] == "NOT_FOUND"
+    assert err["details"][0]["reason"] == "TASK_NOT_FOUND"
 
 
 async def test_v10_jsonrpc_cancel_task(jsonrpc_input_client: httpx.AsyncClient) -> None:

@@ -392,11 +392,10 @@ class A2AServer:
             app.state.capabilities = server._card_config.capabilities
             app.state.extended_card_provider = server._extended_card_provider
             app.state.additional_protocols = server._additional_transports or None
-            # Expose the active A2A wire versions so TracingMiddleware and
+            # Expose the active A2A wire version so TracingMiddleware and
             # downstream observability can tag spans with ``a2akit.a2a.version``
-            # (spec §12). Dual-protocol servers expose the full set; the
-            # router that handled the request refines it per-call via
-            # ``envelope.context["a2a_version"]``.
+            # (spec §12); the router that handled the request refines it
+            # per-call via ``envelope.context["a2a_version"]``.
             app.state.protocol_version = server._protocol_version
 
             await server._deps.startup()
