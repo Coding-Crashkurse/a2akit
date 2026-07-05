@@ -76,17 +76,25 @@ class InMemoryStorage(Storage[ContextT]):
         """Return filtered and paginated tasks.
 
         v10 ``TaskStatus.timestamp`` is a Pydantic wrapper, not a plain
-        string. Sort by its string repr so comparisons stay total-orderable
-        even when the wrapper doesn't implement ``__lt__`` against itself.
+        string. Sort and filter on its ISO-8601 string form so comparisons
+        stay total-orderable (the wrapper implements neither ``__lt__``
+        against itself nor comparison against ``str``).
         """
 
-        def _sort_key(t: v10.Task) -> tuple[str, str]:
+        def _ts_str(t: v10.Task) -> str:
             ts = t.status.timestamp
             if ts is None:
-                return ("", t.id)
-            if hasattr(ts, "root"):
-                return (str(ts.root), t.id)
-            return (str(ts), t.id)
+                return ""
+            root = getattr(ts, "root", ts)
+            if isinstance(root, datetime):
+                # isoformat() matches the wire/storage representation
+                # ("...T..."); str(datetime) would use a space separator
+                # and mis-order against client-supplied ISO strings.
+                return root.isoformat()
+            return str(root)
+
+        def _sort_key(t: v10.Task) -> tuple[str, str]:
+            return (_ts_str(t), t.id)
 
         all_tasks = sorted(self.tasks.values(), key=_sort_key, reverse=True)
 
@@ -98,10 +106,9 @@ class InMemoryStorage(Storage[ContextT]):
                 continue
             if query.tenant and (t.metadata or {}).get(META_TENANT_KEY) != query.tenant:
                 continue
-            if (
-                query.status_timestamp_after
-                and (t.status.timestamp or "") <= query.status_timestamp_after
-            ):
+            # Compare via the unwrapped string — the raw Timestamp wrapper
+            # does not support ``<=`` against str (TypeError).
+            if query.status_timestamp_after and _ts_str(t) <= query.status_timestamp_after:
                 continue
             filtered.append(t)
 
@@ -245,28 +252,38 @@ class InMemoryStorage(Storage[ContextT]):
                 f"from {task.status.state.value} to {state.value}"
             )
 
+        # Atomicity: apply every change to a deep working copy and commit it
+        # back only after all mutations succeed — a failure halfway (e.g. in
+        # artifact application) must not leave a partially updated task.
+        # Inputs are deep-copied as well so callers holding references to
+        # the message/artifact objects cannot mutate stored state later.
+        work = task.model_copy(deep=True)
+
         if messages:
-            if task.history is None:
-                task.history = []
-            task.history.extend(messages)
+            if work.history is None:
+                work.history = []
+            work.history.extend(m.model_copy(deep=True) for m in messages)
 
         if artifacts:
             for aw in artifacts:
-                self._apply_artifact(task, aw.artifact, append=aw.append)
+                self._apply_artifact(work, aw.artifact.model_copy(deep=True), append=aw.append)
+
+        if status_message is not None:
+            status_message = status_message.model_copy(deep=True)
 
         # Always operate on a plain dict — v10.Task.metadata may be a Struct,
         # a dict, or None depending on history of reassignments.
         # Always work with a plain dict so setdefault / update have their
         # normal Python semantics; Pydantic's validate_assignment re-wraps
         # into Struct on write-back.
-        md: dict[str, Any] = dict(task.metadata or {})
+        md: dict[str, Any] = dict(work.metadata or {})
 
         if task_metadata:
-            md.update(task_metadata)
+            md.update(copy.deepcopy(task_metadata))
 
         now = datetime.now(UTC).isoformat()
         if state is not None:
-            task.status = v10.TaskStatus(
+            work.status = v10.TaskStatus(
                 state=state,
                 timestamp=now,
                 message=status_message,
@@ -277,15 +294,17 @@ class InMemoryStorage(Storage[ContextT]):
             md[META_LAST_MODIFIED_KEY] = now
         elif status_message is not None:
             # Update status message without a state transition (e.g. progress text)
-            task.status = v10.TaskStatus(
-                state=task.status.state,
+            work.status = v10.TaskStatus(
+                state=work.status.state,
                 timestamp=now,
                 message=status_message,
             )
             md[META_LAST_MODIFIED_KEY] = now
 
-        task.metadata = md or None
+        work.metadata = md or None
 
+        # Commit: all mutations succeeded — publish the working copy.
+        self.tasks[task_id] = work
         new_version = current_version + 1
         self._versions[task_id] = new_version
         return new_version

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from collections import deque
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
@@ -69,6 +70,15 @@ class InMemoryEventBus(EventBus):
         # Per-task ring buffer for replay and monotonic counter for event IDs.
         self._replay_buffers: dict[str, deque[_BufferedEvent]] = {}
         self._event_counters: dict[str, int] = {}
+        # Post-terminal replay grace window (seconds). Replay buffers and
+        # counters are kept for this long after cleanup() so a client
+        # reconnecting with a Last-Event-ID can still replay the final
+        # events (RedisEventBus keeps its stream for 60s via EXPIRE).
+        self._replay_ttl_s = 60.0
+        # task_id -> monotonic deadline after which its replay state may
+        # be purged. Purging is lazy (checked on publish/cleanup) — no
+        # background task, so no shutdown race with the event loop.
+        self._purge_deadlines: dict[str, float] = {}
 
     async def __aenter__(self) -> Self:
         """Acquire the subscriber lock."""
@@ -88,6 +98,11 @@ class InMemoryEventBus(EventBus):
         Assigns a monotonic event ID and buffers the event for replay.
         Returns the event ID as a string.
         """
+        self._purge_expired()
+        # New activity on this task revives it — cancel a pending purge so
+        # the counter keeps increasing monotonically.
+        self._purge_deadlines.pop(task_id, None)
+
         # Assign monotonic event ID.
         counter = self._event_counters.get(task_id, 0) + 1
         self._event_counters[task_id] = counter
@@ -216,9 +231,27 @@ class InMemoryEventBus(EventBus):
             if _is_stream_terminal(ev):
                 break
 
+    def _purge_expired(self) -> None:
+        """Drop replay state whose post-terminal grace window has elapsed."""
+        now = time.monotonic()
+        expired = [tid for tid, deadline in self._purge_deadlines.items() if deadline <= now]
+        for tid in expired:
+            self._purge_deadlines.pop(tid, None)
+            self._replay_buffers.pop(tid, None)
+            self._event_counters.pop(tid, None)
+
     async def cleanup(self, task_id: str) -> None:
-        """Remove subscriber state and replay buffer for a completed task."""
+        """Release subscriber state; schedule replay-state purge.
+
+        The replay buffer and event counter are NOT dropped immediately:
+        destroying them at terminal cleanup gives a 0s replay window (a
+        client reconnecting with a Last-Event-ID right after completion
+        would silently miss the final events), and resetting the counter
+        means a reused task_id with a stale Last-Event-ID suppresses all
+        new events.  Instead they are purged lazily ~60s later, matching
+        the Redis event bus's 60s stream EXPIRE.
+        """
         async with self._subscriber_lock:
             self._subs.pop(task_id, None)
-        self._replay_buffers.pop(task_id, None)
-        self._event_counters.pop(task_id, None)
+        self._purge_deadlines[task_id] = time.monotonic() + self._replay_ttl_s
+        self._purge_expired()

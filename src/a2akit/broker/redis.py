@@ -10,7 +10,7 @@ import socket
 import time
 import uuid
 from contextlib import suppress
-from typing import TYPE_CHECKING, Any, Self
+from typing import TYPE_CHECKING, Any, Self, TypeVar, cast
 
 from a2akit.broker.base import (
     Broker,
@@ -31,12 +31,24 @@ except ImportError as _import_error:
     ) from _import_error
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Callable
+    from collections.abc import AsyncIterator, Awaitable, Callable
     from types import TracebackType
 
     from a2a_pydantic import v10
 
 logger = logging.getLogger(__name__)
+
+_T = TypeVar("_T")
+
+
+def _aw(value: Awaitable[_T] | _T) -> Awaitable[_T]:
+    """Narrow redis-py's ``Awaitable[T] | T`` return annotation.
+
+    redis-py shares command stubs between its sync and async clients, so
+    async methods are annotated as returning ``Awaitable[T] | T``. On
+    ``redis.asyncio`` the result is always awaitable.
+    """
+    return cast("Awaitable[_T]", value)
 
 
 def _serialize_operation(
@@ -169,7 +181,9 @@ class RedisCancelScope(CancelScope):
         if self._pubsub is not None:
             try:
                 await self._pubsub.unsubscribe()
-                await self._pubsub.aclose()
+                # Via Any: PubSub.aclose() is unannotated in some redis-py
+                # versions, which trips strict mypy's no-untyped-call.
+                await cast("Any", self._pubsub).aclose()
             except Exception:
                 pass
             self._pubsub = None
@@ -310,6 +324,7 @@ class RedisOperationHandle(OperationHandle):
         attempt: int,
         max_retries: int,
         crash_count_key: str = "",
+        stream_maxlen: int | None = None,
     ) -> None:
         self._redis = redis_client
         self._stream_key = stream_key
@@ -321,6 +336,7 @@ class RedisOperationHandle(OperationHandle):
         self._attempt = attempt
         self._max_retries = max_retries
         self._crash_count_key = crash_count_key
+        self._stream_maxlen = stream_maxlen
 
     @property
     def operation(self) -> TaskOperation:
@@ -341,7 +357,7 @@ class RedisOperationHandle(OperationHandle):
         """Remove crash-claim tracking for this message."""
         if self._crash_count_key:
             mid = self._msg_id.decode() if isinstance(self._msg_id, bytes) else str(self._msg_id)
-            await self._redis.hdel(self._crash_count_key, mid)
+            await _aw(self._redis.hdel(self._crash_count_key, mid))
 
     async def nack(self, *, delay_seconds: float = 0) -> None:
         """XACK original + XADD new entry with attempt+1.
@@ -366,12 +382,14 @@ class RedisOperationHandle(OperationHandle):
             await self._redis.xadd(
                 self._dlq_key,
                 {b"op": self._serialized_op, b"attempt": str(next_attempt).encode()},
+                maxlen=self._stream_maxlen,
+                approximate=True,
             )
             await self._redis.xack(self._stream_key, self._group_name, self._msg_id)
             await self._clear_crash_count()
             return
 
-        readd_fields: dict[bytes, bytes] = {
+        readd_fields: dict[Any, Any] = {
             b"op": self._serialized_op,
             b"attempt": str(next_attempt).encode(),
         }
@@ -384,7 +402,12 @@ class RedisOperationHandle(OperationHandle):
         # the *new* entry (not the original, which was ACKed here).
         async with self._redis.pipeline(transaction=False) as pipe:
             pipe.xack(self._stream_key, self._group_name, self._msg_id)
-            pipe.xadd(self._stream_key, readd_fields)
+            pipe.xadd(
+                self._stream_key,
+                readd_fields,
+                maxlen=self._stream_maxlen,
+                approximate=True,
+            )
             await pipe.execute()
         await self._clear_crash_count()
 
@@ -409,6 +432,7 @@ class RedisBroker(Broker):
         claim_timeout_ms: int | None = None,
         key_prefix: str | None = None,
         max_retries: int | None = None,
+        stream_maxlen: int | None = None,
         settings: Settings | None = None,
     ) -> None:
         s = settings or get_settings()
@@ -427,6 +451,12 @@ class RedisBroker(Broker):
             claim_timeout_ms if claim_timeout_ms is not None else s.redis_broker_claim_timeout_ms
         )
         self._max_retries = max_retries if max_retries is not None else s.max_retries
+        # Approximate MAXLEN applied to every XADD on the task stream and
+        # DLQ — XACK never removes entries, so untrimmed streams grow
+        # without bound.
+        self._stream_maxlen = (
+            stream_maxlen if stream_maxlen is not None else s.redis_broker_stream_maxlen
+        )
         self._shutdown_flag = False
         self._owns_connection = pool is None
         self._url = url or s.redis_url
@@ -449,7 +479,7 @@ class RedisBroker(Broker):
 
         try:
             # Verify connectivity
-            await self._redis.ping()
+            await _aw(self._redis.ping())
 
             # Create consumer group (MKSTREAM creates the stream if needed)
             try:
@@ -496,7 +526,7 @@ class RedisBroker(Broker):
         """Ping Redis to verify connectivity."""
         try:
             if self._redis:
-                await self._redis.ping()
+                await _aw(self._redis.ping())
             return {"status": "ok"}
         except Exception as exc:
             return {"status": "error", "error": str(exc)}
@@ -517,6 +547,8 @@ class RedisBroker(Broker):
         await self._r.xadd(
             self._stream_key,
             {b"op": serialized.encode(), b"attempt": b"1"},
+            maxlen=self._stream_maxlen,
+            approximate=True,
         )
 
     async def shutdown(self) -> None:
@@ -561,15 +593,17 @@ class RedisBroker(Broker):
             for _stream_name, messages in entries:
                 for msg_id, fields in messages:
                     # Respect retry backoff: if the message carries a
-                    # not_before timestamp (set by nack with delay), wait
-                    # until it has passed.  The message is durably in the
-                    # stream so a crash during the sleep is recovered by
-                    # XAUTOCLAIM — no data loss.
+                    # not_before timestamp (set by nack with delay) that is
+                    # still in the future, push it back to the stream tail
+                    # (fields preserved, incl. attempt and not_before) and
+                    # ACK this delivery — sleeping here would head-of-line
+                    # block every message behind this one.  The re-add
+                    # happens before the ACK, so the entry is durably in
+                    # the stream at all times (at-least-once preserved).
                     not_before_raw = fields.get(b"not_before")
-                    if not_before_raw:
-                        remaining = float(not_before_raw) - time.time()
-                        if remaining > 0:
-                            await asyncio.sleep(remaining)
+                    if not_before_raw and float(not_before_raw) > time.time():
+                        await self._requeue_not_due(msg_id, fields)
+                        continue
                     try:
                         op = _deserialize_operation(fields)
                         attempt = int(fields.get(b"attempt", b"1"))
@@ -584,6 +618,7 @@ class RedisBroker(Broker):
                             attempt=attempt,
                             max_retries=self._max_retries,
                             crash_count_key=self._crash_count_key,
+                            stream_maxlen=self._stream_maxlen,
                         )
                     except Exception:
                         logger.exception("Failed to deserialize operation %s", msg_id)
@@ -593,8 +628,35 @@ class RedisBroker(Broker):
                                 b"op": fields.get(b"op", b""),
                                 b"error": b"deserialization_failed",
                             },
+                            maxlen=self._stream_maxlen,
+                            approximate=True,
                         )
                         await self._r.xack(self._stream_key, self._group_name, msg_id)
+
+    async def _requeue_not_due(self, msg_id: bytes, fields: dict[bytes, bytes]) -> None:
+        """Push a not-yet-due entry back to the stream tail and ACK it.
+
+        XADD before XACK, both in one MULTI, so a failure can never
+        acknowledge the delivery without the replacement entry being
+        durably in the stream (at-least-once preserved).  All fields are
+        preserved, including ``attempt`` and ``not_before``.  The re-added
+        entry lands at the stream tail, so ready work is consumed first;
+        the consumer only busy-polls Redis when the queue holds nothing
+        but not-yet-due entries.
+        """
+        mid = msg_id.decode() if isinstance(msg_id, bytes) else str(msg_id)
+        async with self._r.pipeline(transaction=True) as pipe:
+            pipe.xadd(
+                self._stream_key,
+                cast("dict[Any, Any]", fields),
+                maxlen=self._stream_maxlen,
+                approximate=True,
+            )
+            pipe.xack(self._stream_key, self._group_name, msg_id)
+            # Drop crash-claim tracking for the ACKed entry — the re-added
+            # entry gets a fresh ID (and thus a fresh crash count).
+            pipe.hdel(self._crash_count_key, mid)
+            await pipe.execute()
 
     async def _claim_stale_messages(self) -> AsyncIterator[OperationHandle]:
         """Reclaim messages from dead consumers via XAUTOCLAIM."""
@@ -618,6 +680,14 @@ class RedisBroker(Broker):
                     # Deleted entry, just ACK it
                     await self._r.xack(self._stream_key, self._group_name, msg_id)
                     continue
+                # Honor retry backoff on claimed entries too: a claimed
+                # message whose not_before is still in the future is pushed
+                # back to the stream tail (fields preserved) instead of
+                # being executed early.
+                not_before_raw = fields.get(b"not_before")
+                if not_before_raw and float(not_before_raw) > time.time():
+                    await self._requeue_not_due(msg_id, fields)
+                    continue
                 try:
                     op = _deserialize_operation(fields)
                     base_attempt = int(fields.get(b"attempt", b"1"))
@@ -626,7 +696,7 @@ class RedisBroker(Broker):
                     # the payload's attempt counter stays frozen. This hash
                     # counts XAUTOCLAIM re-deliveries to catch the loop.
                     mid = msg_id.decode() if isinstance(msg_id, bytes) else str(msg_id)
-                    claim_count = await self._r.hincrby(self._crash_count_key, mid, 1)
+                    claim_count = await _aw(self._r.hincrby(self._crash_count_key, mid, 1))
                     effective_attempt = base_attempt + claim_count
                     if effective_attempt > self._max_retries:
                         logger.error(
@@ -640,9 +710,11 @@ class RedisBroker(Broker):
                                 b"op": fields[b"op"],
                                 b"attempt": str(effective_attempt).encode(),
                             },
+                            maxlen=self._stream_maxlen,
+                            approximate=True,
                         )
                         await self._r.xack(self._stream_key, self._group_name, msg_id)
-                        await self._r.hdel(self._crash_count_key, mid)
+                        await _aw(self._r.hdel(self._crash_count_key, mid))
                         # Yield a handle so the WorkerAdapter can mark
                         # the task as failed in storage (the broker has
                         # no access to storage/emitter).
@@ -657,6 +729,7 @@ class RedisBroker(Broker):
                             attempt=effective_attempt,
                             max_retries=self._max_retries,
                             crash_count_key=self._crash_count_key,
+                            stream_maxlen=self._stream_maxlen,
                         )
                         continue
                     logger.warning(
@@ -673,6 +746,7 @@ class RedisBroker(Broker):
                         attempt=effective_attempt,
                         max_retries=self._max_retries,
                         crash_count_key=self._crash_count_key,
+                        stream_maxlen=self._stream_maxlen,
                     )
                 except Exception:
                     logger.exception("Failed to deserialize claimed message %s", msg_id)
@@ -682,6 +756,8 @@ class RedisBroker(Broker):
                             b"op": fields.get(b"op", b""),
                             b"error": b"deserialization_failed",
                         },
+                        maxlen=self._stream_maxlen,
+                        approximate=True,
                     )
                     await self._r.xack(self._stream_key, self._group_name, msg_id)
         except aioredis.ResponseError:
@@ -692,8 +768,13 @@ class RedisBroker(Broker):
 def redis_task_lock_factory(
     redis_client: aioredis.Redis,
     timeout: int = 300,
+    *,
+    key_prefix: str | None = None,
 ) -> Callable[[str], Any]:
     """Return a task lock factory using Redis distributed locks.
+
+    ``key_prefix`` defaults to ``settings.redis_key_prefix`` so lock keys
+    share the namespace of the rest of the deployment.
 
     Usage::
 
@@ -704,8 +785,9 @@ def redis_task_lock_factory(
             task_lock_factory=redis_task_lock_factory(redis_client, timeout=300),
         )
     """
+    prefix = key_prefix if key_prefix is not None else get_settings().redis_key_prefix
 
     def _create_lock(task_id: str) -> Any:
-        return redis_client.lock(f"a2akit:tasklock:{task_id}", timeout=timeout)
+        return redis_client.lock(f"{prefix}tasklock:{task_id}", timeout=timeout)
 
     return _create_lock

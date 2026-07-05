@@ -31,12 +31,26 @@ These settings apply when using the Redis broker, event bus, or cancel registry 
 | `A2AKIT_REDIS_BROKER_GROUP` | `workers` | Consumer group name |
 | `A2AKIT_REDIS_BROKER_CONSUMER_PREFIX` | `worker` | Consumer name prefix (hostname+PID appended) |
 | `A2AKIT_REDIS_BROKER_BLOCK_MS` | `5000` | XREADGROUP block timeout (ms) |
-| `A2AKIT_REDIS_BROKER_CLAIM_TIMEOUT_MS` | `60000` | XAUTOCLAIM idle threshold (ms) |
+| `A2AKIT_REDIS_BROKER_CLAIM_TIMEOUT_MS` | `600000` | XAUTOCLAIM idle threshold (ms, 10 min) |
+| `A2AKIT_REDIS_BROKER_STREAM_MAXLEN` | `10000` | Approximate max length of the task stream and DLQ |
 | `A2AKIT_REDIS_EVENT_BUS_CHANNEL_PREFIX` | `events:` | Pub/Sub channel prefix |
 | `A2AKIT_REDIS_EVENT_BUS_STREAM_PREFIX` | `eventlog:` | Replay stream prefix |
 | `A2AKIT_REDIS_EVENT_BUS_STREAM_MAXLEN` | `1000` | Max replay stream length per task |
 | `A2AKIT_REDIS_CANCEL_KEY_PREFIX` | `cancel:` | Cancel flag key prefix |
 | `A2AKIT_REDIS_CANCEL_TTL_S` | `86400` | Cancel key TTL in seconds (24h) |
+| `A2AKIT_REDIS_IDEMPOTENCY_TTL_S` | `86400` | TTL for idempotency-key mappings in RedisStorage (SQL/Memory never expire them) |
+
+!!! warning "Claim timeout vs. duplicate execution"
+    `A2AKIT_REDIS_BROKER_CLAIM_TIMEOUT_MS` controls how long a message may
+    sit unacknowledged before another worker reclaims it via `XAUTOCLAIM`.
+    There is no worker heartbeat, so a worker that is *busy* (e.g. a long
+    LLM turn) looks exactly like a worker that *crashed*. A low value
+    recovers from crashes quickly but re-delivers — and therefore
+    duplicates — tasks that simply run long; a high value avoids duplicates
+    at the cost of slower crash recovery. The default is 10 minutes. For
+    multi-worker deployments, pair it with per-task locking via
+    `redis_task_lock_factory` so an occasional duplicate delivery cannot
+    run concurrently with the original.
 
 ## Priority
 
@@ -95,12 +109,14 @@ class Settings(BaseSettings):
     redis_broker_group: str = "workers"
     redis_broker_consumer_prefix: str = "worker"
     redis_broker_block_ms: int = 5000
-    redis_broker_claim_timeout_ms: int = 60000
+    redis_broker_claim_timeout_ms: int = 600000
+    redis_broker_stream_maxlen: int = 10000
     redis_event_bus_channel_prefix: str = "events:"
     redis_event_bus_stream_prefix: str = "eventlog:"
     redis_event_bus_stream_maxlen: int = 1000
     redis_cancel_key_prefix: str = "cancel:"
     redis_cancel_ttl_s: int = 86400  # 24h
+    redis_idempotency_ttl_s: int = 86400  # 24h
 
     # Push notification settings
     push_max_retries: int = 3

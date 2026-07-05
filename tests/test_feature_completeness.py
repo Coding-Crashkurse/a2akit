@@ -471,7 +471,7 @@ async def test_event_bus_replay_old_id_replays_from_oldest():
 
 
 async def test_event_bus_replay_buffer_cleanup():
-    """cleanup removes buffer for a task."""
+    """cleanup schedules buffer removal after a replay grace window."""
     from a2a.types import TaskState, TaskStatus, TaskStatusUpdateEvent
 
     bus = InMemoryEventBus(replay_buffer_size=100)
@@ -488,6 +488,12 @@ async def test_event_bus_replay_buffer_cleanup():
         )
         assert "t1" in bus._replay_buffers
         await bus.cleanup("t1")
+        # The buffer survives cleanup for a ~60s grace window so late
+        # Last-Event-ID reconnects can still replay the final events.
+        assert "t1" in bus._replay_buffers
+        # After the window elapses, the lazy purge drops the state.
+        bus._purge_deadlines["t1"] = 0.0
+        await bus.cleanup("t2")
         assert "t1" not in bus._replay_buffers
         assert "t1" not in bus._event_counters
 

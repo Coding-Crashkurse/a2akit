@@ -6,7 +6,7 @@ import json
 import logging
 import uuid
 from datetime import UTC, datetime
-from typing import Any, Self
+from typing import TYPE_CHECKING, Any, Self, TypeVar, cast
 
 from a2a_pydantic import v10
 
@@ -38,13 +38,39 @@ except ImportError as _import_error:
         "Install them with: pip install a2akit[redis]"
     ) from _import_error
 
+if TYPE_CHECKING:
+    from collections.abc import Awaitable
+
 logger = logging.getLogger(__name__)
+
+_T = TypeVar("_T")
+
+
+def _aw(value: Awaitable[_T] | _T) -> Awaitable[_T]:
+    """Narrow redis-py's ``Awaitable[T] | T`` return annotation.
+
+    redis-py shares command stubs between its sync and async clients, so
+    async methods are annotated as returning ``Awaitable[T] | T``. On
+    ``redis.asyncio`` the result is always awaitable.
+    """
+    return cast("Awaitable[_T]", value)
+
+
+def _as_str(value: Any) -> str:
+    """Decode a Redis reply that may be ``bytes`` or ``str``.
+
+    Pools created with ``decode_responses=True`` return ``str``; default
+    pools return ``bytes``. Support both instead of blindly ``.decode()``.
+    """
+    return value.decode() if isinstance(value, bytes) else str(value)
+
 
 # Lua script for atomic update_task with OCC + terminal-state guard.
 # KEYS[1] = task hash key
 # ARGV[1] = expected_version ("" if not set)
 # ARGV[2] = new state ("" if not changing)
 # ARGV[3] = JSON-encoded values dict to HSET
+# ARGV[4] = JSON array of terminal state values (from TERMINAL_STATES)
 # Returns: new version (int) or error string
 _UPDATE_TASK_LUA = """
 local key = KEYS[1]
@@ -66,12 +92,15 @@ if expected_version ~= '' then
     end
 end
 
--- Terminal state guard (v1.0 state values are uppercase: TASK_STATE_*)
+-- Terminal state guard. The terminal-state list is passed as ARGV[4]
+-- (JSON array) so it is always derived from TERMINAL_STATES in
+-- storage/base.py — enum changes cannot silently diverge from this guard.
 if new_state ~= '' then
     local current_state = redis.call('HGET', key, 'status_state')
-    if current_state == 'TASK_STATE_COMPLETED' or current_state == 'TASK_STATE_CANCELED'
-       or current_state == 'TASK_STATE_FAILED' or current_state == 'TASK_STATE_REJECTED' then
-        return redis.error_reply('TERMINAL_STATE:' .. current_state .. ':' .. new_state)
+    for _, terminal in ipairs(cjson.decode(ARGV[4])) do
+        if current_state == terminal then
+            return redis.error_reply('TERMINAL_STATE:' .. current_state .. ':' .. new_state)
+        end
     end
 end
 
@@ -97,6 +126,7 @@ return new_version
 # KEYS[3] = context set key
 # ARGV[1] = task_id
 # ARGV[2] = JSON-encoded hash fields
+# ARGV[3] = idempotency-key TTL in seconds
 # Returns: task_id of existing or newly created task
 _CREATE_IDEMPOTENT_LUA = """
 local idem_key = KEYS[1]
@@ -120,12 +150,14 @@ for k, v in pairs(fields) do
 end
 redis.call('HSET', task_key, unpack(flat))
 redis.call('SADD', ctx_set_key, task_id)
-redis.call('SET', idem_key, task_id, 'EX', 86400)
+redis.call('SET', idem_key, task_id, 'EX', tonumber(ARGV[3]))
 
 return task_id
 """
 
 _TERMINAL_STATE_VALUES = {s.value for s in TERMINAL_STATES}
+# Wire form of the terminal-state guard list fed to _UPDATE_TASK_LUA (ARGV[4]).
+_TERMINAL_STATES_JSON = json.dumps(sorted(_TERMINAL_STATE_VALUES))
 
 
 class RedisStorage(Storage[ContextT]):
@@ -150,6 +182,7 @@ class RedisStorage(Storage[ContextT]):
     ) -> None:
         s = settings or get_settings()
         self._key_prefix = key_prefix or s.redis_key_prefix
+        self._idempotency_ttl_s = s.redis_idempotency_ttl_s
         self._owns_connection = pool is None
         self._url = url or s.redis_url
         self._pool = pool
@@ -169,7 +202,7 @@ class RedisStorage(Storage[ContextT]):
         else:
             self._redis = aioredis.from_url(self._url)
         try:
-            await self._redis.ping()
+            await _aw(self._redis.ping())
             # register_script() handles NOSCRIPT retry automatically after Redis restarts
             self._update_script = self._redis.register_script(_UPDATE_TASK_LUA)
             self._create_idem_script = self._redis.register_script(_CREATE_IDEMPOTENT_LUA)
@@ -189,7 +222,7 @@ class RedisStorage(Storage[ContextT]):
         """Ping Redis to verify connectivity."""
         try:
             if self._redis:
-                await self._redis.ping()
+                await _aw(self._redis.ping())
             return {"status": "ok"}
         except Exception as exc:
             return {"status": "error", "error": str(exc)}
@@ -281,11 +314,12 @@ class RedisStorage(Storage[ContextT]):
         *,
         include_artifacts: bool = True,
     ) -> v10.Task | None:
-        data = await self._r.hgetall(self._task_key(task_id))
+        data = await _aw(self._r.hgetall(self._task_key(task_id)))
         if not data:
             return None
-        # Decode bytes to str
-        decoded = {k.decode(): v.decode() for k, v in data.items()}
+        # Normalize to str keys/values (bytes on default pools, str with
+        # decode_responses=True).
+        decoded = {_as_str(k): _as_str(v) for k, v in data.items()}
         return self._hash_to_task(
             decoded, history_length=history_length, include_artifacts=include_artifacts
         )
@@ -335,10 +369,10 @@ class RedisStorage(Storage[ContextT]):
                     self._task_key(task_id),
                     self._ctx_set_key(context_id),
                 ],
-                args=[task_id, json.dumps(fields)],
+                args=[task_id, json.dumps(fields), str(self._idempotency_ttl_s)],
                 client=self._r,
             )
-            returned_id = result_id.decode() if isinstance(result_id, bytes) else result_id
+            returned_id = _as_str(result_id)
             if returned_id != task_id:
                 # Existing task found via idempotency key — no just-created marker.
                 existing = await self.load_task(returned_id)
@@ -399,11 +433,11 @@ class RedisStorage(Storage[ContextT]):
 
         max_attempts = 1 if expected_version is not None else 8
         for attempt in range(max_attempts):
-            current_data = await self._r.hgetall(self._task_key(task_id))
+            current_data = await _aw(self._r.hgetall(self._task_key(task_id)))
             if not current_data:
                 raise TaskNotFoundError(f"Task {task_id} not found")
 
-            decoded = {k.decode(): v.decode() for k, v in current_data.items()}
+            decoded = {_as_str(k): _as_str(v) for k, v in current_data.items()}
             read_version = int(decoded["version"])
             occ_version = expected_version if expected_version is not None else read_version
 
@@ -460,6 +494,7 @@ class RedisStorage(Storage[ContextT]):
                         str(occ_version),
                         state.value if state is not None else "",
                         json.dumps(values),
+                        _TERMINAL_STATES_JSON,
                     ],
                     client=self._r,
                 )
@@ -516,24 +551,24 @@ class RedisStorage(Storage[ContextT]):
     async def list_tasks(self, query: ListTasksQuery) -> ListTasksResult:
         # Determine candidate task IDs
         if query.context_id:
-            task_ids_bytes = await self._r.smembers(self._ctx_set_key(query.context_id))
-            task_ids = [tid.decode() for tid in task_ids_bytes]
+            task_ids_raw = await _aw(self._r.smembers(self._ctx_set_key(query.context_id)))
+            task_ids = [_as_str(tid) for tid in task_ids_raw]
         else:
             # Scan for all task keys
             task_ids_set: set[str] = set()
             pattern = f"{self._key_prefix}task:*"
             async for key in self._r.scan_iter(match=pattern, count=200):
-                key_str = key.decode() if isinstance(key, bytes) else key
+                key_str = _as_str(key)
                 task_ids_set.add(key_str[len(f"{self._key_prefix}task:") :])
             task_ids = list(task_ids_set)
 
         # Load and filter tasks
         filtered: list[v10.Task] = []
         for tid in task_ids:
-            data = await self._r.hgetall(self._task_key(tid))
+            data = await _aw(self._r.hgetall(self._task_key(tid)))
             if not data:
                 continue
-            decoded = {k.decode(): v.decode() for k, v in data.items()}
+            decoded = {_as_str(k): _as_str(v) for k, v in data.items()}
 
             if query.status and decoded.get("status_state") != query.status.value:
                 continue
@@ -575,71 +610,67 @@ class RedisStorage(Storage[ContextT]):
         task_key = self._task_key(task_id)
 
         # Get context_id and idempotency_key before deleting
-        fields = await self._r.hmget(task_key, "context_id", "metadata_json")
+        fields = await _aw(self._r.hmget(task_key, ["context_id", "metadata_json"]))
         context_id_raw = fields[0]
         if context_id_raw is None:
             return False
 
-        ctx_id = context_id_raw.decode() if isinstance(context_id_raw, bytes) else context_id_raw
+        ctx_id = _as_str(context_id_raw)
 
         # Clean up idempotency key if present
-        keys_to_delete = [task_key]
+        extra_keys: list[str] = []
         if fields[1]:
-            import json as _json
-
-            meta = _json.loads(fields[1].decode() if isinstance(fields[1], bytes) else fields[1])
+            meta = json.loads(_as_str(fields[1]))
             idem_key = meta.get("_idempotency_key")
             if idem_key:
-                keys_to_delete.append(self._idem_key(ctx_id, idem_key))
+                extra_keys.append(self._idem_key(ctx_id, idem_key))
 
-        # Remove from context set and delete hash + idem key
-        await self._r.srem(self._ctx_set_key(ctx_id), task_id)
-        await self._r.delete(*keys_to_delete)
-        await self._cascade_push_delete_for_task(task_id)
-        return True
+        # SREM + DEL in a single MULTI/EXEC so the context set and the task
+        # hash cannot diverge, and use the DEL count of the task hash as the
+        # authoritative "did it exist" answer — the HMGET above is only a
+        # hint and can race with a concurrent deleter.
+        async with self._r.pipeline(transaction=True) as pipe:
+            pipe.srem(self._ctx_set_key(ctx_id), task_id)
+            pipe.delete(task_key)
+            if extra_keys:
+                pipe.delete(*extra_keys)
+            results = await pipe.execute()
+        existed = bool(results[1])
+        if existed:
+            await self._cascade_push_delete_for_task(task_id)
+        return existed
 
     async def delete_context(self, context_id: str) -> int:
         ctx_set_key = self._ctx_set_key(context_id)
 
-        task_ids_bytes = await self._r.smembers(ctx_set_key)
-        if not task_ids_bytes:
-            # Also delete context data
-            await self._r.delete(self._context_data_key(context_id))
-            return 0
+        task_ids_raw = await _aw(self._r.smembers(ctx_set_key))
+        task_ids = [_as_str(tid) for tid in task_ids_raw]
 
-        task_ids = [tid.decode() for tid in task_ids_bytes]
-
-        # Delete all task hashes + idempotency keys + context set + context data
-        keys_to_delete = []
+        # Delete each task via the atomic delete_task (SREM + DEL in one
+        # MULTI) so the returned count only includes tasks that actually
+        # existed — a concurrent deleter racing us is counted exactly once.
+        # delete_task also handles idempotency-key cleanup and the
+        # push-config cascade per task.
+        deleted = 0
         for tid in task_ids:
-            keys_to_delete.append(self._task_key(tid))
-            # Clean up idempotency key if present
-            meta_raw = await self._r.hget(self._task_key(tid), "metadata_json")
-            if meta_raw:
-                meta = json.loads(meta_raw.decode() if isinstance(meta_raw, bytes) else meta_raw)
-                idem_key = meta.get("_idempotency_key")
-                if idem_key:
-                    keys_to_delete.append(self._idem_key(context_id, idem_key))
-        keys_to_delete.append(ctx_set_key)
-        keys_to_delete.append(self._context_data_key(context_id))
-        await self._r.delete(*keys_to_delete)
+            if await self.delete_task(tid):
+                deleted += 1
 
-        await self._cascade_push_delete_for_tasks(task_ids)
-        return len(task_ids)
+        # Remove the (now empty) context set and the context data.
+        await _aw(self._r.delete(ctx_set_key, self._context_data_key(context_id)))
+        return deleted
 
     async def get_version(self, task_id: str) -> int | None:
-        version = await self._r.hget(self._task_key(task_id), "version")
+        version = await _aw(self._r.hget(self._task_key(task_id), "version"))
         if version is None:
             return None
-        raw = version.decode() if isinstance(version, bytes) else version
-        return int(raw)
+        return int(_as_str(version))
 
     async def load_context(self, context_id: str) -> ContextT | None:
-        data = await self._r.get(self._context_data_key(context_id))
+        data = await _aw(self._r.get(self._context_data_key(context_id)))
         if data is None:
             return None
-        raw = data.decode() if isinstance(data, bytes) else data
-        return json.loads(raw)  # type: ignore[no-any-return]
+        return json.loads(_as_str(data))  # type: ignore[no-any-return]
 
     async def update_context(self, context_id: str, context: ContextT) -> None:
         await self._r.set(self._context_data_key(context_id), json.dumps(context))

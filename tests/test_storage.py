@@ -2,11 +2,18 @@
 
 from __future__ import annotations
 
+import anyio
 import pytest
-from a2a.types import Message, Part, Role, TextPart
+from a2a.types import Artifact, Message, Part, Role, TextPart
 from a2a_pydantic.v10 import TaskState
 
-from a2akit.storage.base import ConcurrencyError, TaskTerminalStateError
+from a2akit.storage.base import (
+    META_TENANT_KEY,
+    ArtifactWrite,
+    ConcurrencyError,
+    ListTasksQuery,
+    TaskTerminalStateError,
+)
 
 
 def _msg(text: str = "hello", msg_id: str = "msg1") -> Message:
@@ -16,6 +23,13 @@ def _msg(text: str = "hello", msg_id: str = "msg1") -> Message:
         parts=[Part(root=TextPart(text=text))],
         message_id=msg_id,
     )
+
+
+def _ts(task) -> str:
+    """Return a task's status timestamp as an ISO string."""
+    ts = task.status.timestamp
+    root = getattr(ts, "root", ts)
+    return root.isoformat() if hasattr(root, "isoformat") else str(root)
 
 
 async def test_create_task(storage):
@@ -173,3 +187,76 @@ async def test_idempotency(storage):
     t2 = await storage.create_task("ctx-1", _msg("b", "m2"), idempotency_key="idem-1")
 
     assert t1.id == t2.id
+
+
+async def test_list_tasks_status_timestamp_after(storage):
+    """statusTimestampAfter returns only tasks whose status changed after the cutoff."""
+    t1 = await storage.create_task("ctx-1", _msg("a", "m1"))
+    cutoff = _ts(await storage.load_task(t1.id))
+    await anyio.sleep(0.01)  # ensure a strictly later timestamp
+    t2 = await storage.create_task("ctx-1", _msg("b", "m2"))
+
+    result = await storage.list_tasks(ListTasksQuery(status_timestamp_after=cutoff))
+    assert [t.id for t in result.tasks] == [t2.id]
+    assert result.total_size == 1
+
+
+async def test_list_tasks_tenant_filter(storage):
+    """tenant filter matches only tasks whose metadata carries the tenant."""
+    t1 = await storage.create_task("ctx-1", _msg("a", "m1"))
+    await storage.update_task(t1.id, task_metadata={META_TENANT_KEY: "acme"})
+    await storage.create_task("ctx-1", _msg("b", "m2"))
+
+    result = await storage.list_tasks(ListTasksQuery(tenant="acme"))
+    assert [t.id for t in result.tasks] == [t1.id]
+    assert result.total_size == 1
+
+
+async def test_update_task_does_not_store_input_references(storage):
+    """Mutating a message after update_task must not change stored state."""
+    from a2a_pydantic.v10 import Message as V10Message
+    from a2a_pydantic.v10 import Part as V10Part
+    from a2a_pydantic.v10 import Role as V10Role
+
+    task = await storage.create_task("ctx-1", _msg("first", "m1"))
+    m2 = V10Message(
+        role=V10Role.role_user,
+        parts=[V10Part(text="second")],
+        message_id="m2",
+        task_id=task.id,
+        context_id="ctx-1",
+    )
+    await storage.update_task(task.id, messages=[m2])
+
+    m2.parts[0].text = "mutated"
+
+    loaded = await storage.load_task(task.id)
+    assert loaded is not None
+    assert loaded.history[1].parts[0].text == "second"
+
+
+async def test_update_task_atomic_on_partial_failure(storage):
+    """A failure during artifact application must leave the task untouched."""
+    task = await storage.create_task("ctx-1", _msg("first", "m1"))
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("artifact application failed")
+
+    storage._apply_artifact = boom  # instance attribute shadows the method
+
+    m2 = _msg("second", "m2").model_copy(update={"task_id": task.id, "context_id": "ctx-1"})
+    art = Artifact(artifact_id="a1", parts=[Part(root=TextPart(text="x"))])
+    with pytest.raises(RuntimeError):
+        await storage.update_task(
+            task.id,
+            state=TaskState.task_state_working,
+            messages=[m2],
+            artifacts=[ArtifactWrite(artifact=art)],
+        )
+
+    loaded = await storage.load_task(task.id)
+    assert loaded is not None
+    # Neither the message append nor the state change may be visible.
+    assert len(loaded.history) == 1
+    assert loaded.status.state == TaskState.task_state_submitted
+    assert await storage.get_version(task.id) == 1
