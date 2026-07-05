@@ -673,7 +673,6 @@ class TaskContextImpl(TaskContext):
         request_context: dict[str, Any] | None = None,
         deps: DependencyContainer | None = None,
         accepted_output_modes: list[str] | None = None,
-        deferred_storage: bool = False,
     ) -> None:
         """Initialize the task context.
 
@@ -710,7 +709,6 @@ class TaskContextImpl(TaskContext):
         self._last_flush: float = time.monotonic()
         self._flush_interval: float = 0.5  # seconds
         self._flush_count: int = 10  # max buffered chunks before flush
-        self._deferred_storage: bool = deferred_storage
 
     def _make_agent_message(
         self, parts: list[v10.Part], *, metadata: dict[str, Any] | None = None
@@ -771,7 +769,7 @@ class TaskContextImpl(TaskContext):
 
     async def _maybe_flush(self) -> None:
         """Flush pending artifacts to DB if interval or count threshold exceeded."""
-        if self._deferred_storage or not self._pending_artifacts:
+        if not self._pending_artifacts:
             return
         now = time.monotonic()
         if (
@@ -841,6 +839,12 @@ class TaskContextImpl(TaskContext):
             self._pending_artifacts = pending + self._pending_artifacts
             raise
 
+        # Mark the turn as ended IMMEDIATELY after the successful storage
+        # write — an injected emitter raising during event emission below
+        # must not leave a persisted-terminal task with turn_ended False
+        # (that would trigger the adapter's spurious mark-failed path).
+        self._turn_ended = True
+
         # Shield post-write SSE emission from cancellation — the DB write
         # succeeded, so the final event MUST reach subscribers.
         with anyio.CancelScope(shield=True):
@@ -848,7 +852,6 @@ class TaskContextImpl(TaskContext):
                 await self._emitter.send_event(self.task_id, evt)
 
             await self._emit_status(state, message=message)
-            self._turn_ended = True
 
     @property
     def request_context(self) -> dict[str, Any]:
@@ -1024,13 +1027,16 @@ class TaskContextImpl(TaskContext):
         if message is not None:
             status_msg = self._make_agent_message([v10.Part(text=message)])
 
-        # SSE first — streaming clients see status immediately (not terminal).
-        await self._emit_status(v10.TaskState.task_state_working, message=status_msg, final=False)
-
+        # Persist FIRST, then broadcast — the EventEmitter call-order
+        # contract (storage write before EventBus publish) applies here
+        # too: broadcasting first would let replay buffers record a
+        # `working` event AFTER a concurrent writer made the task
+        # terminal (e.g. force-cancel), corrupting the event order for
+        # reconnecting clients.
         # Flush pending artifacts together with the status write.
         # Intentionally omit state= to avoid duplicate stateTransitions
         # entries — we are already in working state.
-        if not self._deferred_storage and status_msg is not None:
+        if status_msg is not None:
             pending = self._pending_artifacts
             self._pending_artifacts = []
             try:
@@ -1041,7 +1047,10 @@ class TaskContextImpl(TaskContext):
                 )
             except ConcurrencyError as exc:
                 # Status-only write lost to concurrent modification — re-buffer
-                # artifacts and continue. Don't kill the task for a progress update.
+                # artifacts and continue. Don't kill the task for a progress
+                # update. Skip the broadcast too: the concurrent writer may
+                # have advanced the task, and a late `working` event would
+                # violate the event-order contract.
                 self._pending_artifacts = pending + self._pending_artifacts
                 # Refresh _version so subsequent writes don't cascade into retries.
                 if exc.current_version is not None:
@@ -1056,6 +1065,8 @@ class TaskContextImpl(TaskContext):
                 self._pending_artifacts = pending + self._pending_artifacts
                 raise
             self._last_flush = time.monotonic()
+
+        await self._emit_status(v10.TaskState.task_state_working, message=status_msg, final=False)
 
     async def emit_artifact(
         self,

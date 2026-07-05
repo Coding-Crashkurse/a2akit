@@ -184,6 +184,24 @@ class TestContainerLifecycle:
         await c.shutdown()
         assert db.stopped is False
 
+    async def test_same_instance_under_two_keys_starts_and_stops_once(self) -> None:
+        log: list[str] = []
+        dep = OrderTracker("A", log)
+        c = DependencyContainer({"a": dep, OrderTracker: dep})
+        await c.startup()
+        assert log.count("A:start") == 1
+        await c.shutdown()
+        assert log.count("A:stop") == 1
+
+    async def test_rollback_dedups_shared_instance(self) -> None:
+        log: list[str] = []
+        dep = OrderTracker("A", log)
+        c = DependencyContainer({"a": dep, "alias": dep, "fail": FailingDependency()})
+        with pytest.raises(RuntimeError, match="startup failed"):
+            await c.startup()
+        assert log.count("A:start") == 1
+        assert log.count("A:stop") == 1
+
 
 def _make_send_body(text: str = "hello") -> dict:
     return {

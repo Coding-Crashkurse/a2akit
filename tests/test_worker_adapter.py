@@ -5,6 +5,7 @@ from __future__ import annotations
 import uuid
 from unittest.mock import AsyncMock, MagicMock
 
+import anyio
 import httpx
 from a2a.types import (
     Message,
@@ -390,3 +391,63 @@ async def test_cleanup_exception_does_not_propagate():
         handle = _make_handle(op, attempt=1)
         # Should not raise even though both cleanups fail
         await adapter._handle_op_inner(handle)
+
+
+async def test_broker_loop_survives_iterator_crash():
+    """An exception escaping the broker's receive iterator must not kill the
+    consumption loop — the adapter retries and keeps consuming."""
+    storage = InMemoryStorage()
+    async with InMemoryBroker() as inner, InMemoryEventBus() as event_bus:
+        cancel_reg = InMemoryCancelRegistry()
+        emitter = DefaultEventEmitter(event_bus, storage)
+
+        class FlakyBroker:
+            """Delegates to an InMemoryBroker but crashes the first receive."""
+
+            def __init__(self, wrapped):
+                self._wrapped = wrapped
+                self.crashes = 0
+
+            async def receive_task_operations(self):
+                if self.crashes == 0:
+                    self.crashes += 1
+                    raise ValueError("malformed stream entry")
+                async for handle in self._wrapped.receive_task_operations():
+                    yield handle
+
+            def __getattr__(self, name):
+                return getattr(self._wrapped, name)
+
+        flaky = FlakyBroker(inner)
+
+        class CompleteWorker(Worker):
+            async def handle(self, ctx: TaskContext) -> None:
+                await ctx.complete("done")
+
+        adapter = WorkerAdapter(
+            CompleteWorker(),
+            flaky,  # type: ignore[arg-type]
+            storage,
+            event_bus,
+            cancel_reg,
+            emitter=emitter,
+        )
+
+        init_msg = Message(
+            role=Role.user,
+            parts=[Part(TextPart(text="hello"))],
+            message_id=str(uuid.uuid4()),
+        )
+        task_obj = await storage.create_task("ctx-1", init_msg)
+        op = _make_run_op(task_id=task_obj.id)
+
+        with anyio.fail_after(15):
+            async with adapter.run():
+                await inner.run_task(op.params, is_new_task=True)
+                while True:
+                    loaded = await storage.load_task(task_obj.id)
+                    if loaded and loaded.status.state == TaskState.task_state_completed:
+                        break
+                    await anyio.sleep(0.05)
+
+        assert flaky.crashes == 1

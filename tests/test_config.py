@@ -93,6 +93,14 @@ class TestGetSettings:
         assert logging.getLogger("a2akit").level == logging.DEBUG
         get_settings.cache_clear()
 
+    def test_get_settings_invalid_log_level_falls_back_to_info(self, monkeypatch):
+        monkeypatch.setenv("A2AKIT_LOG_LEVEL", "NOT_A_LEVEL")
+        get_settings.cache_clear()
+        s = get_settings()  # must not raise ValueError
+        assert s.log_level == "NOT_A_LEVEL"
+        assert logging.getLogger("a2akit").level == logging.INFO
+        get_settings.cache_clear()
+
 
 class TestConstructorPriority:
     """Explicit constructor parameters beat env-vars."""

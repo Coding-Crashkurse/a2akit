@@ -675,3 +675,48 @@ async def test_cancel_dedup_returns_current_state():
         result = await tm.cancel_task(task.id)
         assert result is not None
         assert result.id == task.id
+
+
+async def test_tenant_persisted_on_both_transports():
+    """send_message AND stream_message persist params.tenant for list_tasks filtering."""
+    from a2a_pydantic.v10 import SendMessageConfiguration, SendMessageRequest
+
+    from a2akit.storage.base import ListTasksQuery
+
+    storage = InMemoryStorage()
+    async with InMemoryBroker() as broker, InMemoryEventBus() as event_bus:
+        cancel_reg = InMemoryCancelRegistry()
+        tm = TaskManager(
+            broker=broker,
+            storage=storage,
+            event_bus=event_bus,
+            cancel_registry=cancel_reg,
+        )
+
+        def _req() -> SendMessageRequest:
+            return SendMessageRequest(
+                message=V10Message(
+                    role=V10Role.role_user,
+                    parts=[V10Part(text="hi")],
+                    message_id=str(uuid.uuid4()),
+                ),
+                configuration=SendMessageConfiguration(return_immediately=True),
+                tenant="acme",
+            )
+
+        async with asyncio.timeout(10):
+            sent = await tm.send_message(_req())
+            assert isinstance(sent, Task)
+
+            stream = tm.stream_message(_req())
+            streamed_task = None
+            async for _eid, ev in stream:
+                streamed_task = ev
+                break
+            await stream.aclose()
+            assert isinstance(streamed_task, Task)
+
+        result = await tm.list_tasks(ListTasksQuery(tenant="acme"))
+        ids = {t.id for t in result.tasks}
+        assert sent.id in ids
+        assert streamed_task.id in ids

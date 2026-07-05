@@ -7,6 +7,8 @@ from functools import lru_cache
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+logger = logging.getLogger(__name__)
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="A2AKIT_")
@@ -55,5 +57,11 @@ def get_settings() -> Settings:
     """
     s = Settings()
     if s.log_level:
-        logging.getLogger("a2akit").setLevel(s.log_level.upper())
+        level = s.log_level.upper()
+        if level not in logging.getLevelNamesMapping():
+            # get_settings is called from arbitrary call sites — an invalid
+            # A2AKIT_LOG_LEVEL must not raise ValueError there.
+            logger.warning("Invalid A2AKIT_LOG_LEVEL %r, falling back to INFO", s.log_level)
+            level = "INFO"
+        logging.getLogger("a2akit").setLevel(level)
     return s

@@ -1,4 +1,8 @@
-"""Lifecycle hooks — fire-and-forget callbacks on state transitions."""
+"""Lifecycle hooks — callbacks awaited inline in the write path on state transitions.
+
+Hooks are awaited before the write path returns, so they must be fast;
+slow hooks delay task processing. Hook errors are logged and swallowed.
+"""
 
 from __future__ import annotations
 

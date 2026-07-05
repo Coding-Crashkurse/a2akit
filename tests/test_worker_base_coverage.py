@@ -146,9 +146,7 @@ def test_extract_data_parts_skips_text():
     assert len(result) == 0
 
 
-async def _make_ctx(
-    storage=None, event_bus=None, state=TaskState.task_state_working, deferred_storage=False
-):
+async def _make_ctx(storage=None, event_bus=None, state=TaskState.task_state_working):
     """Helper to create a TaskContextImpl with real storage/event_bus."""
     if storage is None:
         storage = InMemoryStorage()
@@ -182,7 +180,6 @@ async def _make_ctx(
         cancel_event=cancel_scope,
         storage=storage,
         initial_version=version,
-        deferred_storage=deferred_storage,
     )
     return ctx, storage, event_bus, task
 
@@ -628,97 +625,17 @@ async def test_polling_sees_terminal_with_all_artifacts():
         await event_bus.__aexit__(None, None, None)
 
 
-# --- Deferred storage mode tests ---
-
-
-async def test_deferred_storage_skips_flush_on_count():
-    """In deferred mode, hitting flush_count does NOT trigger a DB write."""
-    ctx, storage, event_bus, task = await _make_ctx(deferred_storage=True)
-    try:
-        ctx._flush_count = 3
-        ctx._flush_interval = 0.0
-        ctx._last_flush = 0.0
-
-        for i in range(5):
-            await ctx.emit_text_artifact(f"c{i}", artifact_id="s", append=True)
-
-        # All 5 still in buffer — no intermediate flush
-        assert len(ctx._pending_artifacts) == 5
-        loaded = await storage.load_task(task.id)
-        assert len(loaded.artifacts) == 0
-    finally:
-        await event_bus.__aexit__(None, None, None)
-
-
-async def test_deferred_storage_skips_flush_on_time():
-    """In deferred mode, exceeding flush_interval does NOT trigger a DB write."""
-    ctx, storage, event_bus, task = await _make_ctx(deferred_storage=True)
-    try:
-        ctx._flush_count = 999
-        ctx._flush_interval = 0.0
-        ctx._last_flush = 0.0
-
-        await ctx.emit_text_artifact("chunk", artifact_id="s", append=True)
-
-        assert len(ctx._pending_artifacts) == 1
-        loaded = await storage.load_task(task.id)
-        assert len(loaded.artifacts) == 0
-    finally:
-        await event_bus.__aexit__(None, None, None)
-
-
-async def test_deferred_storage_send_status_skips_db():
-    """In deferred mode, send_status does NOT write to DB."""
-    ctx, storage, event_bus, task = await _make_ctx(deferred_storage=True)
+async def test_send_status_persists_for_polling_clients():
+    """send_status(message) persists the status message so tasks/get sees progress."""
+    ctx, storage, event_bus, task = await _make_ctx()
     try:
         await ctx.emit_text_artifact("chunk", artifact_id="s", append=True)
         await ctx.send_status("thinking...")
 
-        # Artifacts still buffered — no DB write for status
-        assert len(ctx._pending_artifacts) == 1
-        loaded = await storage.load_task(task.id)
-        assert len(loaded.artifacts) == 0
-    finally:
-        await event_bus.__aexit__(None, None, None)
-
-
-async def test_deferred_storage_complete_drains_all():
-    """In deferred mode, complete() still writes everything atomically to DB."""
-    ctx, storage, event_bus, task = await _make_ctx(deferred_storage=True)
-    try:
-        for i in range(10):
-            await ctx.emit_text_artifact(f"chunk{i}", artifact_id="stream", append=True)
-
-        # All buffered, nothing in DB
-        assert len(ctx._pending_artifacts) == 10
-        loaded = await storage.load_task(task.id)
-        assert len(loaded.artifacts) == 0
-
-        await ctx.complete("Done")
-
-        # Terminal write drains everything
+        # Status write flushed the buffered artifact along with the message
         assert len(ctx._pending_artifacts) == 0
         loaded = await storage.load_task(task.id)
-        assert loaded.status.state == TaskState.task_state_completed
-        assert len(loaded.artifacts) >= 1
-    finally:
-        await event_bus.__aexit__(None, None, None)
-
-
-async def test_deferred_storage_fail_drains_all():
-    """In deferred mode, fail() still persists all buffered artifacts."""
-    ctx, storage, event_bus, task = await _make_ctx(deferred_storage=True)
-    try:
-        for i in range(5):
-            await ctx.emit_text_artifact(f"partial{i}", artifact_id="stream", append=True)
-
-        assert len(ctx._pending_artifacts) == 5
-
-        await ctx.fail("something went wrong")
-
-        assert len(ctx._pending_artifacts) == 0
-        loaded = await storage.load_task(task.id)
-        assert loaded.status.state == TaskState.task_state_failed
-        assert len(loaded.artifacts) >= 1
+        assert loaded.status.message is not None
+        assert len(loaded.artifacts) == 1
     finally:
         await event_bus.__aexit__(None, None, None)

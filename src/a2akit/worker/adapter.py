@@ -23,7 +23,8 @@ if TYPE_CHECKING:
     from a2akit.dependencies import DependencyContainer
     from a2akit.event_bus.base import EventBus
     from a2akit.storage import Storage
-    from a2akit.worker.base import Worker
+    from a2akit.storage.base import ArtifactWrite
+    from a2akit.worker.base import TaskContextImpl, Worker
 
 logger = logging.getLogger(__name__)
 
@@ -78,7 +79,10 @@ class WorkerAdapter:
             try:
                 yield
             finally:
-                await self._broker.shutdown()
+                # Shield the broker shutdown — a hard lifespan cancellation
+                # would otherwise skip it and leak broker resources.
+                with anyio.CancelScope(shield=True):
+                    await self._broker.shutdown()
                 tg.cancel_scope.cancel()
 
     async def _broker_loop(self) -> None:
@@ -91,12 +95,30 @@ class WorkerAdapter:
         pulled into local memory and parked behind a semaphore. Essential
         for horizontal scaling with Redis Streams (XREADGROUP) and for
         avoiding OOM with large backlogs.
+
+        The receive iterator is wrapped in a resilient retry loop: any
+        exception escaping the broker generator (Redis timeout, protocol
+        error, a malformed stream entry failing validation) is logged and
+        the iterator is re-entered after an exponential backoff — it must
+        never tear down the server. No OperationHandle exists at that
+        point, so the attempt-based poison-pill logic in ``_handle_op_inner``
+        cannot apply. Cancellation (shutdown) still propagates normally.
         """
+        backoff = 1.0
         async with anyio.create_task_group() as tg:
-            async for handle in self._broker.receive_task_operations():
-                if self._semaphore is not None:
-                    await self._semaphore.acquire()
-                tg.start_soon(self._handle_op, handle)
+            while True:
+                try:
+                    async for handle in self._broker.receive_task_operations():
+                        backoff = 1.0  # reset after a successful receive
+                        if self._semaphore is not None:
+                            await self._semaphore.acquire()
+                        tg.start_soon(self._handle_op, handle)
+                    # Iterator ended cleanly (broker shutdown) — stop consuming.
+                    return
+                except Exception:
+                    logger.exception("Broker receive loop failed, retrying in %.1fs", backoff)
+                    await anyio.sleep(backoff)
+                    backoff = min(backoff * 2, 30.0)
 
     async def _handle_op(self, handle: OperationHandle) -> None:
         """Execute a single operation with ack/nack handling.
@@ -293,19 +315,12 @@ class WorkerAdapter:
                     return
 
                 cfg = getattr(params, "configuration", None)
-                # v10: non-blocking is ``return_immediately=True``. When set,
-                # the client already returned, so we can defer the status-write
-                # to the end of the turn for a small perf win.
-                return_immediately = (
-                    bool(getattr(cfg, "return_immediately", False)) if cfg is not None else False
-                )
                 ctx = await self._context_factory.build(
                     message,
                     cancel_event,
                     is_new_task=is_new_task,
                     request_context=request_context,
                     configuration=cfg,
-                    deferred_storage=return_immediately,
                 )
 
                 try:
@@ -349,7 +364,7 @@ class WorkerAdapter:
                         tg.cancel_scope.cancel()
 
                     if cancel_event.is_set() and not ctx.turn_ended:
-                        pending = await self._drain_pending_artifacts(ctx, task_id)
+                        pending = self._drain_pending_artifacts(ctx)
                         await self._mark_canceled(
                             self._storage,
                             self._emitter,
@@ -365,7 +380,7 @@ class WorkerAdapter:
                             # User-initiated cancel — mark as canceled
                             if span:
                                 span.add_event(EVENT_CANCEL_REQUESTED)
-                            pending = await self._drain_pending_artifacts(ctx, task_id)
+                            pending = self._drain_pending_artifacts(ctx)
                             await self._mark_canceled(
                                 self._storage,
                                 self._emitter,
@@ -386,7 +401,7 @@ class WorkerAdapter:
                     # but not yet flushed to storage.  Write them as an
                     # artifact-only update (state=None bypasses the terminal
                     # guard) so polling clients see them too.
-                    pending = await self._drain_pending_artifacts(ctx, task_id)
+                    pending = self._drain_pending_artifacts(ctx)
                     if pending:
                         try:
                             await emitter.update_task(task_id, artifacts=pending)
@@ -419,7 +434,7 @@ class WorkerAdapter:
                             from opentelemetry.trace import StatusCode
 
                             span.set_status(StatusCode.ERROR, str(exc))
-                        pending = await self._drain_pending_artifacts(ctx, task_id)
+                        pending = self._drain_pending_artifacts(ctx)
                         await self._mark_failed(
                             emitter,
                             self._storage,
@@ -470,7 +485,7 @@ class WorkerAdapter:
                         logger.exception("cancel_registry cleanup failed for %s", task_id)
 
     @staticmethod
-    async def _drain_pending_artifacts(ctx: Any, task_id: str) -> list[Any]:
+    def _drain_pending_artifacts(ctx: TaskContextImpl) -> list[ArtifactWrite]:
         """Take all buffered artifacts out of ``ctx`` so they can be
         included atomically with the terminal state write.
 
