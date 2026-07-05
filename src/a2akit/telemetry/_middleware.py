@@ -30,17 +30,25 @@ if OTEL_ENABLED:
 
 
 def _detect_method(request: Request) -> str:
-    """Detect the A2A method from the request."""
+    """Detect the A2A method from the request path.
+
+    Matches on path segments and the Google-style custom-method verb
+    (the part after ``:`` in the final segment) rather than raw substrings,
+    so task IDs containing e.g. "subscribe" don't misclassify the request.
+    """
     path = request.url.path
-    if "send" in path and "stream" not in path.lower():
+    segments = [s for s in path.split("/") if s]
+    last = segments[-1] if segments else ""
+    verb = last.rsplit(":", 1)[1] if ":" in last else None
+    if verb == "send":
         return "message/send"
-    if "stream" in path.lower():
+    if verb == "stream":
         return "message/stream"
-    if "cancel" in path:
+    if verb == "cancel":
         return "tasks/cancel"
-    if "subscribe" in path:
+    if verb == "subscribe":
         return "tasks/resubscribe"
-    if "tasks" in path:
+    if "tasks" in segments:
         return "tasks/get"
     return path
 
@@ -109,8 +117,15 @@ class TracingMiddleware(A2AMiddleware):
         self,
         envelope: RequestEnvelope,
         result: v10.Task | v10.Message | None = None,
+        error: BaseException | None = None,
     ) -> None:
-        """End the server span with result attributes."""
+        """End the server span with result attributes.
+
+        ``error`` marks the span as failed. Because the generic middleware
+        loop calls ``after_dispatch(envelope)`` without extra arguments,
+        endpoints also surface failures via ``envelope.context["_a2a_error"]``
+        — either channel flips the span to ``StatusCode.ERROR``.
+        """
         span: Any = envelope.context.get("_otel_span")
         token: Any = envelope.context.get("_otel_token")
         if span is None:
@@ -127,7 +142,13 @@ class TracingMiddleware(A2AMiddleware):
             if hasattr(result, "artifacts") and result.artifacts:
                 span.set_attribute(ATTR_ARTIFACT_COUNT, len(result.artifacts))
 
-        span.set_status(StatusCode.OK)
+        if error is None:
+            error = envelope.context.get("_a2a_error")
+        if error is not None:
+            span.record_exception(error)
+            span.set_status(StatusCode.ERROR, str(error))
+        else:
+            span.set_status(StatusCode.OK)
         span.end()
         if token is not None:
             otel_context.detach(token)

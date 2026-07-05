@@ -44,13 +44,30 @@ async def test_external_base_url_plain():
     assert url == "http://localhost:8000"
 
 
-async def test_external_base_url_forwarded():
+async def test_external_base_url_forwarded_ignored_by_default():
+    """X-Forwarded-* headers are spoofable; ignored unless explicitly trusted."""
     url = external_base_url(
         {"x-forwarded-proto": "https", "x-forwarded-host": "api.example.com"},
         "http",
         "localhost:8000",
     )
-    assert url == "https://api.example.com"
+    assert url == "http://localhost:8000"
+
+
+async def test_external_base_url_forwarded_with_trust_proxy_headers(monkeypatch):
+    from a2akit.config import get_settings
+
+    monkeypatch.setenv("A2AKIT_TRUST_PROXY_HEADERS", "true")
+    get_settings.cache_clear()
+    try:
+        url = external_base_url(
+            {"x-forwarded-proto": "https", "x-forwarded-host": "api.example.com"},
+            "http",
+            "localhost:8000",
+        )
+        assert url == "https://api.example.com"
+    finally:
+        get_settings.cache_clear()
 
 
 async def test_build_card_with_provider():
@@ -177,6 +194,51 @@ async def test_build_card_all_new_fields():
     assert card.skills[0].input_modes == ["text/plain"]
     assert card.skills[0].output_modes == ["application/json"]
     assert card.skills[0].security == [{"bearer": []}]
+
+
+async def test_v10_card_translates_common_security_schemes():
+    """apiKey and http bearer schemes translate to the v1.0 card shape."""
+    from a2a_pydantic import v03
+
+    config = AgentCardConfig(
+        name="S",
+        description="d",
+        security_schemes={
+            "bearer": v03.SecurityScheme(
+                root=v03.HTTPAuthSecurityScheme(type="http", scheme="bearer")
+            ),
+            "apikey": v03.SecurityScheme(
+                root=v03.APIKeySecurityScheme.model_validate(
+                    {"type": "apiKey", "name": "X-Key", "in": "header"}
+                )
+            ),
+        },
+        security=[{"bearer": []}],
+    )
+    card = build_agent_card(config, "http://localhost:8000", protocol_version="1.0")
+    assert set(card.security_schemes) == {"bearer", "apikey"}
+    assert card.security_schemes["bearer"].http_auth_security_scheme.scheme == "bearer"
+    assert card.security_schemes["apikey"].api_key_security_scheme.name == "X-Key"
+    assert card.security_schemes["apikey"].api_key_security_scheme.location == "header"
+    assert len(card.security_requirements) == 1
+
+
+async def test_v10_card_drops_requirements_for_untranslated_schemes(caplog):
+    """Requirements referencing untranslatable/undeclared schemes are dropped
+    so the card never advertises requirements pointing at missing schemes."""
+    import logging
+
+    config = AgentCardConfig(
+        name="S",
+        description="d",
+        # No security_schemes at all — the requirement references nothing.
+        security=[{"oauth": ["read"]}],
+    )
+    with caplog.at_level(logging.WARNING, logger="a2akit.agent_card"):
+        card = build_agent_card(config, "http://localhost:8000", protocol_version="1.0")
+    assert card.security_requirements == []
+    assert card.security_schemes == {}
+    assert any("dropped security" in r.message for r in caplog.records)
 
 
 async def test_build_card_defaults_unchanged():

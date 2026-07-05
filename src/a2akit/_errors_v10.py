@@ -25,6 +25,7 @@ it ships) gRPC so all three transports emit consistent error codes / reasons.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -46,6 +47,8 @@ from a2akit.storage.base import (
 
 _ERROR_INFO_TYPE = "type.googleapis.com/google.rpc.ErrorInfo"
 _ERROR_DOMAIN = "a2a-protocol.org"
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -175,8 +178,17 @@ ERROR_CATALOG: dict[type[Exception], ErrorDescriptor] = {
 
 
 def descriptor_for(exc: Exception) -> ErrorDescriptor:
-    """Return the catalog entry for an exception, or ``INTERNAL_ERROR``."""
-    return ERROR_CATALOG.get(type(exc), INTERNAL_ERROR)
+    """Return the catalog entry for an exception, or ``INTERNAL_ERROR``.
+
+    Walks ``type(exc).__mro__`` so subclasses of cataloged exceptions map
+    to their base's descriptor — mirroring the ``isinstance`` semantics of
+    the registered FastAPI exception handlers.
+    """
+    for klass in type(exc).__mro__:
+        found = ERROR_CATALOG.get(klass)
+        if found is not None:
+            return found
+    return INTERNAL_ERROR
 
 
 @dataclass
@@ -246,6 +258,11 @@ def build_error_from_exception(
     for example) gets folded into ``metadata`` automatically.
     """
     desc = descriptor_for(exc)
+    if desc is INTERNAL_ERROR:
+        # Uncataloged exception: never echo str(exc) to the client — it may
+        # leak internals. Log the detail server-side instead.
+        logger.error("Unhandled exception on the v1.0 wire", exc_info=exc)
+        message = INTERNAL_ERROR.default_message
     merged_meta: dict[str, str] = {}
     if metadata:
         merged_meta.update(metadata)
@@ -274,6 +291,13 @@ def jsonrpc_error_from_exception(exc: Exception, req_id: Any) -> dict[str, Any]:
     per spec — same shape REST emits under ``details``).
     """
     desc = descriptor_for(exc)
+    if desc is INTERNAL_ERROR:
+        # Uncataloged exception: never echo str(exc) to the client — it may
+        # leak internals. Log the detail server-side instead.
+        logger.error("Unhandled exception in v1.0 JSON-RPC handler", exc_info=exc)
+        message = INTERNAL_ERROR.default_message
+    else:
+        message = str(exc) or desc.default_message
     metadata: dict[str, str] = {}
     if isinstance(exc, ContentTypeNotSupportedError):
         metadata["mimeType"] = exc.mime_type
@@ -291,7 +315,7 @@ def jsonrpc_error_from_exception(exc: Exception, req_id: Any) -> dict[str, Any]:
         "id": req_id,
         "error": {
             "code": desc.json_rpc_code,
-            "message": str(exc) or desc.default_message,
+            "message": message,
             "data": [info],
         },
     }

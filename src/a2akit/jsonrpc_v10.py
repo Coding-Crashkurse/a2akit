@@ -26,6 +26,7 @@ from a2akit._errors_v10 import (
     descriptor_for,
     jsonrpc_error_from_exception,
 )
+from a2akit._stream_v10 import sanitize_task_v10, wrap_stream_event_v10
 from a2akit.endpoints_v10 import _check_a2a_version_v10
 from a2akit.middleware import A2AMiddleware, RequestEnvelope
 from a2akit.schema import DirectReply, TerminalMarker
@@ -70,18 +71,10 @@ def _result_response(req_id: Any, result: Any) -> JSONResponse:
     return JSONResponse(content={"jsonrpc": "2.0", "id": req_id, "result": result})
 
 
-def _sanitize(task: v10.Task) -> v10.Task:
-    md = task.metadata
-    if not md:
-        return task
-    cleaned = {k: v for k, v in md.items() if not k.startswith("_")}
-    if len(cleaned) == len(md):
-        return task
-    return task.model_copy(update={"metadata": cleaned or None})
-
-
 def _serialize_task(task: v10.Task) -> dict[str, Any]:
-    return _sanitize(task).model_dump(mode="json", by_alias=True, exclude_none=True)  # type: ignore[no-any-return]
+    return sanitize_task_v10(task).model_dump(  # type: ignore[no-any-return]
+        mode="json", by_alias=True, exclude_none=True
+    )
 
 
 def _map_exception(req_id: Any, exc: Exception) -> JSONResponse:
@@ -180,7 +173,19 @@ def build_jsonrpc_router_v10() -> APIRouter:
 
         req_id, is_notification, body = parsed
         method = body["method"]
-        params = body.get("params") or {}
+        params = body.get("params")
+        if params is None:
+            params = {}
+        elif not isinstance(params, dict):
+            # A2A methods take named params only — arrays/scalars are invalid.
+            if is_notification:
+                return Response(status_code=204)
+            return _error_response(
+                req_id,
+                code=-32602,
+                message="Invalid params: must be an object",
+                reason="INVALID_PARAMS",
+            )
 
         handler = _JSONRPC_DISPATCH.get(method)
         if handler is None:
@@ -210,6 +215,9 @@ def build_jsonrpc_router_v10() -> APIRouter:
                             await mw.before_dispatch(envelope, request)
                             started.append(mw)
                     except Exception as exc:
+                        # Surface the failure to error-aware middleware
+                        # (TracingMiddleware) before after_dispatch runs.
+                        envelope.context["_a2a_error"] = exc
                         if is_notification:
                             return Response(status_code=204)
                         return _map_exception(req_id, exc)
@@ -263,7 +271,9 @@ async def _handle_send_message(
                 started.append(mw)
             assert envelope.params is not None
             result = await tm.send_message(envelope.params, request_context=envelope.context)
-        except Exception:
+        except Exception as inner_exc:
+            # Surface the failure to error-aware middleware (TracingMiddleware).
+            envelope.context["_a2a_error"] = inner_exc
             for mw in reversed(started):
                 await mw.after_dispatch(envelope)
             raise
@@ -339,7 +349,9 @@ async def _handle_send_streaming_message(
             except BaseException:
                 await agen.aclose()
                 raise
-        except BaseException:
+        except BaseException as inner_exc:
+            # Surface the failure to error-aware middleware (TracingMiddleware).
+            envelope.context["_a2a_error"] = inner_exc
             for mw in reversed(started):
                 await mw.after_dispatch(envelope)
             raise
@@ -350,14 +362,17 @@ async def _handle_send_streaming_message(
         task_cache: dict[str, v10.Task] = {}
         try:
             eid, first = first_pair
-            payload = _wrap_v10_stream_event(first, task_cache)
+            # Convention: a DirectReply arriving as the first event
+            # (reachable via Last-Event-ID replay) is emitted as a message
+            # event — uniform across all SSE endpoints.
+            payload = wrap_stream_event_v10(first, task_cache)
             if payload is not None:
                 envelope_out = {"jsonrpc": "2.0", "id": req_id, "result": payload}
                 yield f"id: {eid or ''}\ndata: {json.dumps(envelope_out)}\n\n"
             async for event_id, event in agen:
                 if isinstance(event, DirectReply):
                     continue
-                payload = _wrap_v10_stream_event(event, task_cache)
+                payload = wrap_stream_event_v10(event, task_cache)
                 if payload is not None:
                     envelope_out = {"jsonrpc": "2.0", "id": req_id, "result": payload}
                     yield f"id: {event_id or ''}\ndata: {json.dumps(envelope_out)}\n\n"
@@ -375,42 +390,6 @@ async def _handle_send_streaming_message(
     return StreamingResponse(_sse_gen(), media_type="text/event-stream")
 
 
-def _wrap_v10_stream_event(event: Any, task_cache: dict[str, v10.Task]) -> dict[str, Any] | None:
-    """Return the wrapped-discriminator payload for a stream event (dict, not str)."""
-    if isinstance(event, DirectReply):
-        return {"message": event.message.model_dump(mode="json", by_alias=True, exclude_none=True)}
-    if isinstance(event, TerminalMarker):
-        return {
-            "taskStatusUpdate": event.event.model_dump(
-                mode="json", by_alias=True, exclude_none=True
-            )
-        }
-    if isinstance(event, v10.Task):
-        task_cache[event.id] = event
-        return {"task": _serialize_task(event)}
-    if isinstance(event, v10.Message):
-        return {"message": event.model_dump(mode="json", by_alias=True, exclude_none=True)}
-    if isinstance(event, v10.TaskStatusUpdateEvent):
-        return {
-            "taskStatusUpdate": event.model_dump(mode="json", by_alias=True, exclude_none=True)
-        }
-    if isinstance(event, v10.TaskArtifactUpdateEvent):
-        idx: int | None = None
-        cached = task_cache.get(event.task_id)
-        if cached and cached.artifacts:
-            for i, a in enumerate(cached.artifacts):
-                if a.artifact_id == event.artifact.artifact_id:
-                    idx = i
-                    break
-        payload: dict[str, Any] = {
-            "taskArtifactUpdate": event.model_dump(mode="json", by_alias=True, exclude_none=True)
-        }
-        if idx is not None:
-            payload["index"] = idx
-        return payload
-    return None
-
-
 async def _handle_get_task(request: Request, req_id: Any, params: dict[str, Any]) -> JSONResponse:
     task_id = params.get("id")
     if not task_id:
@@ -420,7 +399,9 @@ async def _handle_get_task(request: Request, req_id: Any, params: dict[str, Any]
             message="Missing 'id' in params",
             reason=VALIDATION_ERROR.reason,
         )
-    history_length = params.get("historyLength") or params.get("history_length")
+    history_length = params.get("historyLength")
+    if history_length is None:  # explicit None check — 0 is a valid value
+        history_length = params.get("history_length")
     try:
         tm = _get_tm(request)
         t = await tm.get_task(task_id, history_length)
@@ -460,7 +441,12 @@ async def _handle_list_tasks(
             status=status_v10,
             page_size=params.get("pageSize", params.get("page_size", 50)),
             page_token=params.get("pageToken") or params.get("page_token"),
-            history_length=params.get("historyLength") or params.get("history_length"),
+            # Explicit None checks — 0 is a valid historyLength.
+            history_length=(
+                params.get("historyLength")
+                if params.get("historyLength") is not None
+                else params.get("history_length")
+            ),
             status_timestamp_after=(
                 params.get("statusTimestampAfter") or params.get("status_timestamp_after")
             ),
@@ -469,7 +455,7 @@ async def _handle_list_tasks(
             ),
         )
         result = await tm.list_tasks(query)
-        result.tasks = [_sanitize(t) for t in result.tasks]
+        result.tasks = [sanitize_task_v10(t) for t in result.tasks]
         return _result_response(
             req_id, result.model_dump(mode="json", by_alias=True, exclude_none=True)
         )
@@ -525,7 +511,9 @@ async def _handle_subscribe_to_task(request: Request, req_id: Any, params: dict[
             except BaseException:
                 await agen.aclose()
                 raise
-        except BaseException:
+        except BaseException as inner_exc:
+            # Surface the failure to error-aware middleware (TracingMiddleware).
+            envelope.context["_a2a_error"] = inner_exc
             for mw in reversed(started):
                 await mw.after_dispatch(envelope)
             raise
@@ -536,14 +524,17 @@ async def _handle_subscribe_to_task(request: Request, req_id: Any, params: dict[
         task_cache: dict[str, v10.Task] = {}
         try:
             eid, first = first_pair
-            payload = _wrap_v10_stream_event(first, task_cache)
+            # Convention: a DirectReply arriving as the first event
+            # (reachable via Last-Event-ID replay) is emitted as a message
+            # event — uniform across all SSE endpoints.
+            payload = wrap_stream_event_v10(first, task_cache)
             if payload is not None:
                 envelope_out = {"jsonrpc": "2.0", "id": req_id, "result": payload}
                 yield f"id: {eid or ''}\ndata: {json.dumps(envelope_out)}\n\n"
             async for event_id, event in agen:
                 if isinstance(event, DirectReply):
                     continue
-                payload = _wrap_v10_stream_event(event, task_cache)
+                payload = wrap_stream_event_v10(event, task_cache)
                 if payload is not None:
                     envelope_out = {"jsonrpc": "2.0", "id": req_id, "result": payload}
                     yield f"id: {event_id or ''}\ndata: {json.dumps(envelope_out)}\n\n"
@@ -565,9 +556,8 @@ async def _handle_health(_req: Request, req_id: Any, _params: dict[str, Any]) ->
     return _result_response(req_id, {"status": "ok"})
 
 
-async def _handle_push_create(
-    request: Request, req_id: Any, params: dict[str, Any]
-) -> JSONResponse:
+def _check_push_supported(request: Request, req_id: Any) -> JSONResponse | None:
+    """Return an error response if push notifications are not enabled, else None."""
     caps = getattr(request.app.state, "capabilities", None)
     if not caps or not caps.push_notifications:
         return _error_response(
@@ -576,6 +566,15 @@ async def _handle_push_create(
             message="Push notifications are not supported",
             reason="PUSH_NOTIFICATIONS_NOT_SUPPORTED",
         )
+    return None
+
+
+async def _handle_push_create(
+    request: Request, req_id: Any, params: dict[str, Any]
+) -> JSONResponse:
+    err = _check_push_supported(request, req_id)
+    if err is not None:
+        return err
     # v1.0 body is a flat TaskPushNotificationConfig.
     task_id = params.get("taskId") or params.get("task_id")
     if not task_id:
@@ -587,24 +586,27 @@ async def _handle_push_create(
         )
     push_store = _get_push_store(request)
     storage = _get_storage(request)
-    wrapped = {
-        "pushNotificationConfig": {
-            "id": params.get("id"),
-            "url": params.get("url"),
-            "token": params.get("token"),
-            "authentication": params.get("authentication"),
-        },
+    # v1.0 params carry the flat webhook fields; the shared handler
+    # validates them as a flat PushNotificationConfig.
+    config_data = {
+        "id": params.get("id"),
+        "url": params.get("url"),
+        "token": params.get("token"),
+        "authentication": params.get("authentication"),
     }
     try:
         from a2akit.push.endpoints import _serialize_tpnc, handle_set_config
 
-        result = await handle_set_config(push_store, storage, task_id, wrapped)
+        result = await handle_set_config(push_store, storage, task_id, config_data)
         return _result_response(req_id, _serialize_tpnc(result))
     except Exception as exc:
         return _map_exception(req_id, exc)
 
 
 async def _handle_push_get(request: Request, req_id: Any, params: dict[str, Any]) -> JSONResponse:
+    err = _check_push_supported(request, req_id)
+    if err is not None:
+        return err
     task_id = params.get("taskId") or params.get("task_id") or params.get("id")
     if not task_id:
         return _error_response(
@@ -626,6 +628,9 @@ async def _handle_push_get(request: Request, req_id: Any, params: dict[str, Any]
 
 
 async def _handle_push_list(request: Request, req_id: Any, params: dict[str, Any]) -> JSONResponse:
+    err = _check_push_supported(request, req_id)
+    if err is not None:
+        return err
     task_id = params.get("taskId") or params.get("task_id") or params.get("id")
     if not task_id:
         return _error_response(
@@ -648,6 +653,9 @@ async def _handle_push_list(request: Request, req_id: Any, params: dict[str, Any
 async def _handle_push_delete(
     request: Request, req_id: Any, params: dict[str, Any]
 ) -> JSONResponse:
+    err = _check_push_supported(request, req_id)
+    if err is not None:
+        return err
     task_id = params.get("taskId") or params.get("task_id")
     config_id = params.get("id") or params.get("configId")
     if not task_id or not config_id:
@@ -694,10 +702,12 @@ async def _handle_get_extended_card(
             req_id, card.model_dump(mode="json", by_alias=True, exclude_none=True)
         )
     except Exception as exc:
+        # Never echo str(exc) for arbitrary exceptions — log server-side.
+        logger.error("Failed to build the authenticated extended card", exc_info=exc)
         return _error_response(
             req_id,
             code=-32603,
-            message=str(exc),
+            message="Internal error",
             reason="INTERNAL_ERROR",
         )
 

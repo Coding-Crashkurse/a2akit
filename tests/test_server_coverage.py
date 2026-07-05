@@ -251,3 +251,22 @@ async def test_exception_handler_not_accepting_messages_with_state():
 
     exc_no_state = TaskNotAcceptingMessagesError()
     assert exc_no_state.state is None
+
+
+def test_extended_card_provider_does_not_mutate_caller_config():
+    """A2AServer must copy the AgentCardConfig instead of mutating it."""
+
+    async def _provider(_request):
+        return AgentCardConfig(name="Ext", description="Extended", version="0.0.1")
+
+    card = AgentCardConfig(name="Test", description="Test", version="0.0.1")
+    assert card.supports_authenticated_extended_card is False
+
+    server = A2AServer(
+        worker=EchoWorker(),
+        agent_card=card,
+        extended_card_provider=_provider,
+    )
+    # The server-side copy is flagged; the caller's object stays untouched.
+    assert server._card_config.supports_authenticated_extended_card is True
+    assert card.supports_authenticated_extended_card is False

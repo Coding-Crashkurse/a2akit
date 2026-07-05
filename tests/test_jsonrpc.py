@@ -144,6 +144,20 @@ class TestEnvelopeValidation:
         data = resp.json()
         assert data["error"]["code"] == -32600
 
+    async def test_array_params_rejected(self, jrpc_client):
+        resp = await jrpc_client.post(
+            "/", json={"jsonrpc": "2.0", "id": 1, "method": "tasks/get", "params": [1, 2]}
+        )
+        data = resp.json()
+        assert data["error"]["code"] == -32602
+
+    async def test_string_params_rejected(self, jrpc_client):
+        resp = await jrpc_client.post(
+            "/", json={"jsonrpc": "2.0", "id": 1, "method": "tasks/get", "params": "nope"}
+        )
+        data = resp.json()
+        assert data["error"]["code"] == -32602
+
 
 class TestMessageSend:
     async def test_echo_complete(self, jrpc_client):
@@ -490,6 +504,25 @@ class TestMessageSendStream:
         data = resp.json()
         assert data["error"]["code"] == -32602
 
+    async def test_stream_terminal_event_has_final_true(self, jrpc_streaming_client):
+        """The closing status-update on a v0.3 JSON-RPC SSE stream carries final=true."""
+        import asyncio
+
+        params = _send_params("hello world")
+        params.pop("configuration", None)  # non-blocking for stream
+        async with asyncio.timeout(10):
+            resp = await jrpc_streaming_client.post("/", json=_rpc("message/stream", params))
+        assert resp.status_code == 200
+        events = []
+        for line in resp.text.replace("\r\n", "\n").split("\n"):
+            if line.startswith("data: "):
+                events.append(json.loads(line[6:]))
+        status_updates = [
+            e["result"] for e in events if e.get("result", {}).get("kind") == "status-update"
+        ]
+        assert status_updates, f"no status-update events in {events}"
+        assert status_updates[-1]["final"] is True
+
 
 class TestPushNotificationStubs:
     @pytest.mark.parametrize(
@@ -505,6 +538,28 @@ class TestPushNotificationStubs:
         resp = await jrpc_client.post("/", json=_rpc(method, {}))
         data = resp.json()
         assert data["error"]["code"] == -32003
+
+
+class TestSerializationSafety:
+    def test_uncataloged_exception_message_not_echoed(self):
+        """Arbitrary exception text must not leak into the JSON-RPC error."""
+        import json as _json
+
+        from a2akit.jsonrpc import _map_exception_to_error
+
+        resp = _map_exception_to_error(1, RuntimeError("secret db password"))
+        body = _json.loads(resp.body)
+        assert body["error"]["code"] == -32603
+        assert body["error"]["message"] == "Internal error"
+
+    def test_serialize_unconvertible_object_returns_none(self):
+        """Objects with no v0.3 wire shape are dropped, not mis-serialized."""
+        from a2akit.jsonrpc import _serialize
+
+        class NotAModel:
+            pass
+
+        assert _serialize(NotAModel()) is None
 
 
 class TestHealth:
