@@ -4,6 +4,120 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.0.36] — hardening: security, v1.0 wire correctness, backend durability
+
+Post-migration review pass fixing verified bugs across the whole stack.
+Several items are behavior changes — read the Security and Changed
+sections before upgrading.
+
+### Security
+- **Agent-card signature verification actually runs for v1.0 cards.**
+  `A2AClient.connect()` previously verified a v0.3 projection that had
+  already dropped the `signatures` field, so "soft" mode never verified
+  (a MITM could alter the card undetected) and "strict" mode rejected
+  every validly signed v1.0 card. Verification now uses the v1.0 card.
+- **`jku` JWKS fetching is off by default.** The verification key is no
+  longer fetched from the attacker-controlled JWS header URL unless an
+  explicit `allowed_jku_hosts` allowlist is provided. Without an
+  allowlist the key must come from `trusted_keys`. Closes a
+  verification-bypass and an SSRF vector.
+- **`X-Forwarded-Proto`/`X-Forwarded-Host` are no longer trusted by
+  default** when building agent-card URLs. Set the new
+  `trust_proxy_headers` setting (`A2AKIT_TRUST_PROXY_HEADERS=true`) when
+  running behind a trusted reverse proxy.
+- **Webhook delivery is pinned to the DNS answer seen at SSRF
+  validation** (Host/SNI preserve the original hostname), closing a
+  DNS-rebinding TOCTOU where validation saw a public IP and delivery
+  re-resolved to an internal address.
+- **API-key comparison is constant-time** (`hmac.compare_digest`) and
+  the `Bearer` scheme is matched case-insensitively per RFC 7235.
+- Fallback internal-error responses no longer echo arbitrary exception
+  text to the client; the detail is logged server-side.
+
+### Fixed
+- **v1.0 push-config create was always rejected (HTTP 400)** on both
+  REST and JSON-RPC — the handlers wrapped the config in a shape
+  `handle_set_config` did not accept. Now fixed.
+- v1.0 JSON-RPC push Get/List/Delete return `-32003`
+  (PUSH_NOTIFICATIONS_NOT_SUPPORTED) instead of crashing to `-32603`
+  when push is disabled.
+- v1.0 REST push-config DELETE returns a clean `204` (no body) instead
+  of triggering an ASGI `RuntimeError` under uvicorn.
+- v1.0 `/health/ready` returns HTTP `503` when a backend is degraded
+  (was always `200`, so readiness probes never failed).
+- v0.3 JSON-RPC SSE terminal events now carry `final: true`.
+- v1.0 SSE parsers no longer crash on a bare `Message` event and no
+  longer drop the final event when the stream closes without a trailing
+  blank line.
+- JSON-RPC dispatchers reject non-object `params` with `-32602` instead
+  of returning a plain-text HTTP 500.
+- v1.0 `historyLength: 0` is honored (was dropped as falsy, returning
+  full history).
+- `list_tasks(status_timestamp_after=...)` no longer raises `TypeError`
+  on the in-memory backend.
+- SQL `list_tasks` tenant filter is applied before pagination, fixing
+  overstated `total_size` and empty-but-non-terminal pages.
+- The worker's broker-consumption loop survives a broker iterator crash
+  (malformed stream entry, transient Redis error) with backoff instead
+  of tearing down the server.
+- `message/stream` persists `tenant` (was send-only) and honors
+  `history_length` on retried requests.
+- A broker-enqueue error can no longer mark a task failed after a worker
+  has already picked it up.
+- In-memory `update_task` is now atomic on partial failure and deep-copies
+  inputs (no aliasing of caller objects); the in-memory event bus keeps
+  replay buffers for a 60s grace window after terminal cleanup.
+- Redis `delete_task` is atomic and returns `False` when a concurrent
+  deleter wins; `redis_task_lock_factory` honors `redis_key_prefix`;
+  RedisStorage tolerates `decode_responses=True` pools.
+- SQLite sets `PRAGMA busy_timeout=5000` so concurrent writers no longer
+  get instant "database is locked" errors.
+- Invalid `A2AKIT_LOG_LEVEL` falls back to `INFO` with a warning instead
+  of raising from an arbitrary call site.
+- A `Dependency` registered under multiple keys starts and stops exactly
+  once.
+
+### Changed
+- **Removed the internal `deferred_storage` optimization.** Intermediate
+  `send_status` writes and periodic artifact flushes now always persist,
+  including for `return_immediately=True` clients (which poll
+  `tasks/get`, so suppressing persistence was inverted). `send_status`
+  events are also broadcast *after* the storage write to preserve SSE
+  ordering.
+- `redis_broker_claim_timeout_ms` default raised from `60000` to
+  `600000` (10 min). The old default let another consumer re-claim and
+  duplicate any task longer than 60s (routine for LLM workloads). For
+  multi-worker deployments prefer `redis_task_lock_factory`.
+- SQL blind writes (`expected_version=None`) retry on contention instead
+  of raising a spurious `ConcurrencyError`, matching Redis semantics.
+- SQL blind `create_task` re-read raises `TaskNotFoundError` instead of a
+  bare `assert`.
+- Per-config webhook delivery queues are bounded (`max_queue_size`,
+  default 100) with drop-oldest; registering an SSRF-blocked or invalid
+  webhook URL now fails fast (400 / JSON-RPC error) instead of being
+  accepted and silently dropped at delivery.
+- Task metrics (`a2akit.task.*`) are recorded again — the emitter now
+  compares against v1.0 `TaskState` values instead of dead v0.3 strings.
+- Server telemetry spans are marked `ERROR` (with recorded exception) on
+  failed requests instead of always `OK`.
+
+### Added
+- `trust_proxy_headers` (`A2AKIT_TRUST_PROXY_HEADERS`, default `false`).
+- `redis_broker_stream_maxlen` (`A2AKIT_REDIS_BROKER_STREAM_MAXLEN`,
+  default `10000`) — approximate MAXLEN for the broker task stream and
+  DLQ, bounding previously unbounded Redis growth.
+- `redis_idempotency_ttl_s` (`A2AKIT_REDIS_IDEMPOTENCY_TTL_S`, default
+  `86400`) — configurable Redis idempotency-key TTL.
+- v1.0 SSE streaming, v1.0 push-config CRUD, signature-verification
+  end-to-end, hard-cancel / shutdown-redelivery, and backend-contention
+  test coverage for the paths above.
+
+### API notes
+- `a2akit._signatures.verify_agent_card` / `verify_signature` are now
+  async coroutines.
+- `TaskContextImpl.__init__` and `ContextFactory.build` no longer accept
+  `deferred_storage` (internal API).
+
 ## [0.0.35] — UNRELEASED (single-version servers, typed mismatch)
 
 ### Removed

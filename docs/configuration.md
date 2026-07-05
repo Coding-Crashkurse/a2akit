@@ -101,6 +101,9 @@ class Settings(BaseSettings):
     broker_buffer: int = 1000
     event_buffer: int = 200
     log_level: str | None = None
+    # Trust X-Forwarded-Proto/-Host when building agent-card URLs.
+    # Enable ONLY behind a trusted reverse proxy.
+    trust_proxy_headers: bool = False
 
     # Redis
     redis_url: str = "redis://localhost:6379/0"
