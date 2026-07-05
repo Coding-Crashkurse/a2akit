@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, patch
 
-from a2akit.push.validation import validate_webhook_url
+from a2akit.push.validation import resolve_webhook_url, validate_webhook_url
 
 # Mock DNS resolution for tests — returns a public IP for any hostname.
 _PUBLIC_ADDRINFO = [(2, 1, 6, "", ("93.184.216.34", 0))]
@@ -152,3 +152,59 @@ async def test_shared_address_space_blocked():
 async def test_documentation_range_blocked():
     """192.0.2.0/24 (TEST-NET-1) is reserved for documentation and not routable."""
     assert await validate_webhook_url("https://192.0.2.1/webhook") is False
+
+
+@patch("a2akit.push.validation.asyncio.get_running_loop", _loop_public)
+async def test_resolve_returns_pinned_ips_for_hostname():
+    """DNS-resolved hostnames return the validated IPs for connection pinning."""
+    resolved = await resolve_webhook_url("https://example.com/webhook")
+    assert resolved is not None
+    assert resolved.hostname == "example.com"
+    assert resolved.pinned_ips == ("93.184.216.34",)
+
+
+async def test_resolve_dedupes_pinned_ips(monkeypatch):
+    """Duplicate DNS answers (multiple socktypes per IP) are deduplicated."""
+
+    async def _dupes(hostname):
+        return [
+            (2, 1, 6, "", ("93.184.216.34", 0)),
+            (2, 2, 17, "", ("93.184.216.34", 0)),
+            (2, 1, 6, "", ("93.184.216.35", 0)),
+        ]
+
+    monkeypatch.setattr("a2akit.push.validation._getaddrinfo", _dupes)
+    resolved = await resolve_webhook_url("https://example.com/webhook")
+    assert resolved is not None
+    assert resolved.pinned_ips == ("93.184.216.34", "93.184.216.35")
+
+
+async def test_resolve_ip_literal_has_no_pinned_ips():
+    """IP-literal hosts are inherently pinned — no rewrite needed."""
+    resolved = await resolve_webhook_url("https://93.184.216.34/webhook")
+    assert resolved is not None
+    assert resolved.pinned_ips is None
+
+
+async def test_resolve_allowlist_has_no_pinned_ips():
+    """Allowlist mode skips DNS entirely, so nothing is pinned."""
+    resolved = await resolve_webhook_url(
+        "https://allowed.com/webhook", allowed_hosts={"allowed.com"}
+    )
+    assert resolved is not None
+    assert resolved.pinned_ips is None
+
+
+@patch("a2akit.push.validation.asyncio.get_running_loop", _loop_private)
+async def test_resolve_private_dns_answer_returns_none():
+    assert await resolve_webhook_url("https://evil.attacker.com/webhook") is None
+
+
+async def test_resolve_empty_dns_answer_returns_none(monkeypatch):
+    """An empty (but non-erroring) DNS answer must be rejected, not pinned to nothing."""
+
+    async def _empty(hostname):
+        return []
+
+    monkeypatch.setattr("a2akit.push.validation._getaddrinfo", _empty)
+    assert await resolve_webhook_url("https://example.com/webhook") is None

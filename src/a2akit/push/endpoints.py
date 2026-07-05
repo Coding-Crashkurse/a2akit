@@ -51,7 +51,13 @@ async def handle_set_config(
     task_id: str,
     config_data: dict[str, Any],
 ) -> TaskPushNotificationConfig:
-    """Create or update a push config for a task."""
+    """Create or update a push config for a task.
+
+    The webhook URL is validated against the active SSRF policy (published
+    by the delivery service) so unsafe URLs are rejected with a 400 at
+    registration instead of being accepted and silently dropped at
+    delivery time.
+    """
     from a2akit.storage.base import TaskNotFoundError
 
     task = await storage.load_task(task_id)
@@ -69,6 +75,26 @@ async def handle_set_config(
             status_code=400,
             detail={"code": -32602, "message": f"Invalid push config: {exc.error_count()} errors"},
         ) from exc
+
+    from a2akit.push.validation import get_registration_policy, validate_webhook_url
+
+    policy = get_registration_policy()
+    if policy is not None and not await validate_webhook_url(
+        config.url,
+        allow_http=policy.allow_http,
+        allowed_hosts=policy.allowed_hosts,
+        blocked_hosts=policy.blocked_hosts,
+    ):
+        from fastapi import HTTPException
+
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": -32602,
+                "message": f"Webhook URL rejected (SSRF protection): {config.url}",
+            },
+        )
+
     return await push_store.set_config(task_id, config)
 
 

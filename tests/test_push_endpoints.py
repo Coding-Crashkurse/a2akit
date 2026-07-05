@@ -16,6 +16,16 @@ class EchoWorker(Worker):
         await ctx.complete(f"Echo: {ctx.user_text}")
 
 
+@pytest.fixture(autouse=True)
+def _public_dns(monkeypatch):
+    """Deterministic DNS for registration-time webhook URL validation."""
+
+    async def _fake_getaddrinfo(hostname):
+        return [(2, 1, 6, "", ("93.184.216.34", 0))]
+
+    monkeypatch.setattr("a2akit.push.validation._getaddrinfo", _fake_getaddrinfo)
+
+
 def _make_push_app(*, push_enabled: bool = True, streaming: bool = False) -> object:
     server = A2AServer(
         worker=EchoWorker(),
@@ -205,6 +215,50 @@ async def test_delete_config_not_found(push_client):
 
     resp = await push_client.delete(f"/v1/tasks/{task_id}/pushNotificationConfigs/nonexistent")
     assert resp.status_code == 404
+
+
+async def test_set_config_rejects_loopback_url(push_client):
+    """SSRF-blocked URLs are rejected with 400 at registration instead of
+    being accepted and silently dropped at delivery time."""
+    resp = await push_client.post("/v1/message:send", json=_send_body())
+    task_id = resp.json()["id"]
+
+    resp = await push_client.post(
+        f"/v1/tasks/{task_id}/pushNotificationConfigs",
+        json={"url": "https://127.0.0.1/webhook"},
+    )
+    assert resp.status_code == 400
+
+    # Nothing was stored.
+    resp = await push_client.get(f"/v1/tasks/{task_id}/pushNotificationConfigs")
+    assert resp.json() == []
+
+
+async def test_set_config_rejects_host_resolving_to_private_ip(push_client, monkeypatch):
+    async def _private(hostname):
+        return [(2, 1, 6, "", ("169.254.169.254", 0))]
+
+    monkeypatch.setattr("a2akit.push.validation._getaddrinfo", _private)
+
+    resp = await push_client.post("/v1/message:send", json=_send_body())
+    task_id = resp.json()["id"]
+
+    resp = await push_client.post(
+        f"/v1/tasks/{task_id}/pushNotificationConfigs",
+        json={"url": "https://internal.example.com/webhook"},
+    )
+    assert resp.status_code == 400
+
+
+async def test_set_config_rejects_bad_scheme(push_client):
+    resp = await push_client.post("/v1/message:send", json=_send_body())
+    task_id = resp.json()["id"]
+
+    resp = await push_client.post(
+        f"/v1/tasks/{task_id}/pushNotificationConfigs",
+        json={"url": "ftp://example.com/webhook"},
+    )
+    assert resp.status_code == 400
 
 
 async def test_agent_card_shows_push_enabled(push_client):
